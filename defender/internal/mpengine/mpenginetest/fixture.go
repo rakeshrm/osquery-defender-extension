@@ -15,7 +15,7 @@ import (
 type FixtureOptions struct {
 	Key               []byte // if nil and !NoEncryption, use default known key
 	NoEncryption      bool
-	PageSize          int    // default 4096
+	PageSize          int // default 4096
 	BeforeCheckpoint  func(db *sql.DB) error
 	AfterCheckpoint   func(db *sql.DB) error
 	WALExtension      string // default "-wal", can be "~wal"

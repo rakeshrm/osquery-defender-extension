@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# Cancel in-progress runs when a new run is triggered on the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: defender/go.mod
+          cache-dependency-path: defender/go.sum
+
+      - name: Run go vet
+        working-directory: ./defender
+        run: go vet ./...
+
+      - name: Run tests
+        working-directory: ./defender
+        run: go test -race ./...
+
+  build:
+    name: Build (all platforms)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags for git describe
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: defender/go.mod
+          cache-dependency-path: defender/go.sum
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries
+          path: bin/
+          retention-days: 7

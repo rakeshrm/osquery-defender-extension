@@ -168,7 +168,7 @@ also has `path` (TEXT).
 | `defender_mpengine_inventory_identifiers` | `MetaInventoryIdentifiers` + `MetaInventoryIdentifierVulnerabilities(Identifier, VulnerabilityId)` | identifier, kind, kind_name (1=cpe, 2=purl), vulnerabilities (comma-joined, sorted) |
 | `defender_mpengine_tables` | `sqlite_master` | table_name, row_count, sql |
 | `defender_mpengine_raw` | any table | table_name, row_id (ordinal), column_name, value (text; blob=hex), value_type. Honors `table_name =` constraint. |
-| `defender_mpengine_status` | `Info` + `pragma integrity_check` | db_path, wal_path, db_size, wal_size, db_sha256, wal_sha256, protection, key_source, keystream_sha256, derived_low_confidence, page_size, db_pages, wal_header_valid, wal_frames_total, wal_frames_committed, wal_commits, integrity_check, table_count, error |
+| `defender_mpengine_status` | `Info` + `pragma integrity_check` | db_path, wal_path, db_size, wal_size, db_sha256, wal_sha256, protection, key_source, keystream_sha256, derived_low_confidence, page_size, db_pages, wal_header_valid, wal_frames_total, wal_frames_committed, wal_commits, wal_note, integrity_check, table_count, error |
 
 Decoding details (match the reference parser / smap):
 

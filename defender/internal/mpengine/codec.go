@@ -161,8 +161,9 @@ func DeriveKeystream(pages [][]byte, frames [][]byte, ps int) ([]byte, int) {
 		return bestLen, gs, ge
 	}
 
-	v56 := make(map[[2]byte]int)
-	v34 := make(map[[2]byte]int)
+	// Votes keep insertion order so ties resolve to the first-seen value,
+	// matching Python's Counter.most_common and keeping derivation deterministic.
+	var v56, v34 orderedVotes
 	for _, p := range nonroot {
 		t := p[0] ^ key[0]
 		if t != 2 && t != 5 && t != 10 && t != 13 {
@@ -177,36 +178,20 @@ func DeriveKeystream(pages [][]byte, frames [][]byte, ps int) ([]byte, int) {
 			hl = 12
 		}
 		k56 := [2]byte{p[5] ^ byte((ge>>8)&0xFF), p[6] ^ byte(ge&0xFF)}
-		v56[k56]++
+		v56.add(k56)
 		if (gs-hl)%2 == 0 {
 			n := (gs - hl) / 2
 			k34 := [2]byte{p[3] ^ byte((n>>8)&0xFF), p[4] ^ byte(n&0xFF)}
-			v34[k34]++
+			v34.add(k34)
 		}
 	}
 
-	if len(v56) > 0 {
-		var bestK [2]byte
-		bestCount := -1
-		for k, count := range v56 {
-			if count > bestCount {
-				bestCount = count
-				bestK = k
-			}
-		}
+	if bestK, ok := v56.best(); ok {
 		key[5] = bestK[0]
 		key[6] = bestK[1]
 	}
 
-	if len(v34) > 0 {
-		var bestK [2]byte
-		bestCount := -1
-		for k, count := range v34 {
-			if count > bestCount {
-				bestCount = count
-				bestK = k
-			}
-		}
+	if bestK, ok := v34.best(); ok {
 		key[3] = bestK[0]
 		key[4] = bestK[1]
 	}
@@ -271,4 +256,32 @@ func DeriveKeystream(pages [][]byte, frames [][]byte, ps int) ([]byte, int) {
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+// orderedVotes counts votes for 2-byte values, remembering first-seen order.
+type orderedVotes struct {
+	counts map[[2]byte]int
+	order  [][2]byte
+}
+
+func (v *orderedVotes) add(k [2]byte) {
+	if v.counts == nil {
+		v.counts = make(map[[2]byte]int)
+	}
+	if v.counts[k] == 0 {
+		v.order = append(v.order, k)
+	}
+	v.counts[k]++
+}
+
+// best returns the most-voted value; ties go to the value seen first.
+func (v *orderedVotes) best() ([2]byte, bool) {
+	var bestK [2]byte
+	bestCount := 0
+	for _, k := range v.order {
+		if c := v.counts[k]; c > bestCount {
+			bestCount, bestK = c, k
+		}
+	}
+	return bestK, bestCount > 0
 }
