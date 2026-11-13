@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huntbase-io/osquery-defender/internal/mpengine"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 )
 
 // sqliteDir writes a plain mpenginedb.db built from stmts into a temp dir.

@@ -1,4 +1,4 @@
-module github.com/huntbase-io/osquery-defender
+module github.com/rakeshrm/osquery-defender-extension
 
 go 1.26.0
 

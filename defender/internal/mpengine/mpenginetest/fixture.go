@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/huntbase-io/osquery-defender/internal/mpengine"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 	_ "modernc.org/sqlite"
 )
 

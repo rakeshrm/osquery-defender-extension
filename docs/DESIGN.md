@@ -55,7 +55,7 @@ a495676b8398db2f35d3c1b9ced52636f2765e1a95cb7ca4c3ddabddbff38253
 ## Architecture
 
 ```
-defender/                         Go module github.com/huntbase-io/osquery-defender
+defender/                         Go module github.com/rakeshrm/osquery-defender-extension
   main.go                         flags, osquery extension server, --decrypt CLI mode
   internal/mpengine/              decryption + snapshot (no osquery dependency)
     codec.go       RC4 keystream, page codec, known keys, key derivation

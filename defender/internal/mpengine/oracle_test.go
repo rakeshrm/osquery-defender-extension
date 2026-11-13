@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/huntbase-io/osquery-defender/internal/mpengine"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 )
 
 // Fixtures in testdata/oracle were generated and self-checked by an independent

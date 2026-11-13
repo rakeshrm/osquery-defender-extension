@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huntbase-io/osquery-defender/internal/mpengine"
-	"github.com/huntbase-io/osquery-defender/internal/mpengine/mpenginetest"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine/mpenginetest"
 )
 
 // (1) Plain unencrypted db passthrough.
