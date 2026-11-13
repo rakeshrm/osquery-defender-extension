@@ -190,10 +190,16 @@ A ready-made Windows pack is in [pack/defender_mpengine.conf](pack/defender_mpen
 
 ## Limitations
 
-- The format is verified for engine 1.1.26100.4. Other engine builds fall back
-  to best-effort keystream derivation (known header plaintext + zero-filled
-  free space voting), which may leave low-confidence bytes and be rejected —
-  check `key_source` and `derived_low_confidence` in `defender_mpengine_status`.
+- Verified live (as SYSTEM, osquery 5.20, Windows Server 2022) on Defender
+  engines 1.1.26090.9 and 1.1.26100.4 — the built-in key decrypted both.
+  Engine builds with a different key fall back to best-effort keystream
+  derivation (known header plaintext + zero-filled free space voting), which
+  may leave low-confidence bytes and be rejected — check `key_source` and
+  `derived_low_confidence` in `defender_mpengine_status`.
+- On those engines software inventory lives in `InventoryEntries`
+  (identifier, vulnerabilities, first/last seen), not `MetaInventoryIdentifiers`,
+  so `defender_mpengine_inventory_identifiers` is empty there; query
+  `defender_mpengine_raw WHERE table_name = 'InventoryEntries'` meanwhile.
 - Defender's schema can change between builds. Tables select only the columns
   that exist; a missing column is empty and a missing table yields zero rows.
 - Defender keeps roughly two weeks of data (attack-scoring queues about one
@@ -222,4 +228,18 @@ cd defender/internal/mpengine/testdata/oracle && python3 -I make_fixtures.py
 
 `self_check.py` there is a second independent decryptor used to validate the
 fixtures; see its [README](defender/internal/mpengine/testdata/oracle/README.md).
+
+### Live Windows testing
+
+`scripts/windows-smoke.ps1` runs the extension against the host's live
+Defender database and writes diagnostics only (versions, status, row counts,
+schema — never row contents or the decrypted DB).
+
+- **GitHub Actions**: `.github/workflows/windows-smoke.yml` runs it on
+  `windows-latest` as the runner admin and as SYSTEM — on pushes touching the
+  extension, weekly (to catch Defender engine updates), and on demand.
+- **GCE VM**: `PROJECT=… ZONE=… SUBNET=… scripts/gce-smoke.sh` creates a
+  throwaway Windows Server VM (no external IP; needs Cloud NAT), runs the test
+  as SYSTEM before and after generating some Defender activity (EICAR, new
+  zip, unsigned exe), downloads the results and deletes everything.
 

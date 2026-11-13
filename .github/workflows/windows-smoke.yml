@@ -1,0 +1,89 @@
+name: Windows smoke test (live Defender DB)
+
+# Runs the extension against the runner's LIVE Defender mpenginedb.db, as the
+# runner admin and as SYSTEM (how osqueryd runs). Weekly, to catch Defender
+# engine updates that change the RC4 key or schema. Uploads diagnostics only
+# (versions, status, counts, schema) - never row contents or the decrypted DB.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "defender/**"
+      - "scripts/windows-smoke.ps1"
+      - ".github/workflows/windows-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: defender/go.mod
+
+      - name: Build extension
+        working-directory: defender
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags "-s -w -X main.Version=smoke" -o "$env:RUNNER_TEMP\defender-mpengine.ext.exe" .
+
+      - name: Install osquery
+        run: |
+          Invoke-WebRequest -UseBasicParsing 'https://pkg.osquery.io/windows/osquery-5.20.0.msi' -OutFile "$env:RUNNER_TEMP\osquery.msi"
+          Start-Process msiexec.exe -Wait -ArgumentList '/i', "$env:RUNNER_TEMP\osquery.msi", '/qn', '/norestart'
+          $osqi = Get-ChildItem -Recurse -Filter osqueryi.exe 'C:\Program Files\osquery' | Select-Object -First 1 -ExpandProperty FullName
+          "OSQUERYI=$osqi" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Smoke test as runner admin
+        id: admin
+        continue-on-error: true
+        run: |
+          & .\scripts\windows-smoke.ps1 -Ext "$env:RUNNER_TEMP\defender-mpengine.ext.exe" -OsqueryI $env:OSQUERYI -OutDir "$env:RUNNER_TEMP\smoke\admin"
+          exit $LASTEXITCODE
+
+      - name: Smoke test as SYSTEM
+        id: system
+        run: |
+          $out = "$env:RUNNER_TEMP\smoke\system"
+          $script = (Resolve-Path .\scripts\windows-smoke.ps1).Path
+          $argline = "-NoProfile -ExecutionPolicy Bypass -File `"$script`" -Ext `"$env:RUNNER_TEMP\defender-mpengine.ext.exe`" -OsqueryI `"$env:OSQUERYI`" -OutDir `"$out`""
+          $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argline
+          Register-ScheduledTask -TaskName osqdef-smoke -Action $action -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest -Force | Out-Null
+          Start-ScheduledTask -TaskName osqdef-smoke
+          $deadline = (Get-Date).AddMinutes(10)
+          do { Start-Sleep 5; $t = Get-ScheduledTask -TaskName osqdef-smoke } while ($t.State -eq 'Running' -and (Get-Date) -lt $deadline)
+          $rc = (Get-ScheduledTaskInfo -TaskName osqdef-smoke).LastTaskResult
+          Unregister-ScheduledTask -TaskName osqdef-smoke -Confirm:$false
+          Get-Content "$out\summary.json" -ErrorAction SilentlyContinue
+          if ($rc -ne 0) { Write-Error "SYSTEM smoke test failed (rc=$rc)"; exit 1 }
+
+      - name: Job summary
+        if: always()
+        run: |
+          foreach ($who in 'admin', 'system') {
+            $f = "$env:RUNNER_TEMP\smoke\$who\summary.json"
+            "### $who" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+            if (Test-Path $f) {
+              '```json' | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+              Get-Content $f | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+              Get-Content "$env:RUNNER_TEMP\smoke\$who\defender.json" -ErrorAction SilentlyContinue | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+              '```' | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+            } else { 'no summary produced' | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY }
+          }
+          Get-ChildItem -Recurse -Directory "$env:RUNNER_TEMP\smoke" -Filter osqdb | Remove-Item -Recurse -Force
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-smoke
+          path: ${{ runner.temp }}/smoke
+          retention-days: 14
