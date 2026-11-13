@@ -50,7 +50,7 @@ EOF
   gcloud storage buckets update "gs://$BUCKET" --lifecycle-file="$TMP/lc.json" --quiet
   gcloud iam service-accounts create "$SA" --project="$PROJECT" --display-name="osqdef soak (temporary)" --quiet
   sleep 10
-  for role in roles/storage.objectViewer roles/storage.objectCreator; do
+  for role in roles/storage.objectViewer roles/storage.objectUser; do  # objectUser: uploads overwrite latest.zip
     gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$SA_EMAIL" \
       --role="$role" --quiet >/dev/null
   done

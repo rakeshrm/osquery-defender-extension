@@ -16,12 +16,6 @@ $osq = 'C:\Program Files\osquery'
 New-Item -ItemType Directory -Force -Path $root, $soak, "$soak\osquery" | Out-Null
 Add-Content "$soak\boots.log" ("{0:o} boot" -f (Get-Date).ToUniversalTime())
 
-if (Test-Path "$root\installed.marker") {
-  Start-Service osqueryd -ErrorAction SilentlyContinue
-  Write-Host 'SOAK: already installed; osqueryd started'
-  exit 0
-}
-
 function Token {
   (Invoke-RestMethod -Headers @{ 'Metadata-Flavor' = 'Google' } `
     'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token').access_token
@@ -29,6 +23,21 @@ function Token {
 function Get-Obj($name, $dest) {
   $u = "https://storage.googleapis.com/storage/v1/b/$bucket/o/$([uri]::EscapeDataString($name))?alt=media"
   Invoke-WebRequest -UseBasicParsing -Headers @{ Authorization = "Bearer $(Token)" } $u -OutFile $dest
+}
+
+if (Test-Path "$root\installed.marker") {
+  # Later boots: keep the soak running, pick up agent fixes from the bucket,
+  # and report task health to the serial console (the only remote view).
+  Start-Service osqueryd -ErrorAction SilentlyContinue
+  try { Get-Obj 'soak/soak-agent.ps1' "$root\soak-agent.ps1" ; Write-Host 'SOAK: agent refreshed' } catch { Write-Host "SOAK: agent refresh failed: $_" }
+  Get-ScheduledTask -TaskName 'osqdef-soak-*' | ForEach-Object {
+    $i = $_ | Get-ScheduledTaskInfo
+    Write-Host ("SOAK: task {0} state={1} last={2:o} result=0x{3:X} next={4:o}" -f $_.TaskName, $_.State, $i.LastRunTime, $i.LastTaskResult, $i.NextRunTime)
+  }
+  $o = & powershell -NoProfile -ExecutionPolicy Bypass -File "$root\soak-agent.ps1" -Mode upload 2>&1
+  Write-Host "SOAK: boot upload output: $o"
+  Get-Content "$soak\upload.log" -Tail 4 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "SOAK: upload.log $_" }
+  exit 0
 }
 
 Write-Host 'SOAK: downloading artifacts'

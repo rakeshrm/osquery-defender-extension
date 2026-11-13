@@ -87,19 +87,39 @@ switch ($Mode) {
   }
 
   'upload' {
-    $bucket = (Get-Content "$root\bucket.txt").Trim()
-    $zip = "$root\upload.zip"
-    Compress-Archive -Force -Path "$soak\*" -DestinationPath $zip
-    $token = (Invoke-RestMethod -Headers @{ 'Metadata-Flavor' = 'Google' } `
-        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token').access_token
-    foreach ($name in "soak/results/$hostId/latest.zip",
-                      "soak/results/$hostId/$($now.ToString('yyyyMMdd-HH')).zip") {
-      $u = "https://storage.googleapis.com/upload/storage/v1/b/$bucket/o?uploadType=media&name=$([uri]::EscapeDataString($name))"
-      Invoke-RestMethod -Method Post -Headers @{ Authorization = "Bearer $token" } -InFile $zip `
-        -ContentType 'application/zip' $u | Out-Null
+    $stamp = $now.ToString('o')
+    try {
+      $bucket = (Get-Content "$root\bucket.txt").Trim()
+      # Stage copies with shared reads: osqueryd keeps its logs open for
+      # writing, and Compress-Archive refuses files open by another writer.
+      $stage = "$root\stage"
+      Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+      $skipped = 0
+      foreach ($f in Get-ChildItem -Recurse -File $soak) {
+        $dst = Join-Path $stage $f.FullName.Substring($soak.Length + 1)
+        New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+        try {
+          $in = [IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite, Delete')
+          try { $out = [IO.File]::Create($dst); try { $in.CopyTo($out) } finally { $out.Close() } } finally { $in.Close() }
+        } catch { $skipped++; Add-Content "$soak\upload.log" "$stamp skip $($f.Name): $($_.Exception.Message)" }
+      }
+      $zip = "$root\upload.zip"
+      Compress-Archive -Force -Path "$stage\*" -DestinationPath $zip -ErrorAction Stop
+      $token = (Invoke-RestMethod -Headers @{ 'Metadata-Flavor' = 'Google' } `
+          'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token').access_token
+      foreach ($name in "soak/results/$hostId/latest.zip",
+                        "soak/results/$hostId/$($now.ToString('yyyyMMdd-HH')).zip") {
+        $u = "https://storage.googleapis.com/upload/storage/v1/b/$bucket/o?uploadType=media&name=$([uri]::EscapeDataString($name))"
+        Invoke-RestMethod -Method Post -Headers @{ Authorization = "Bearer $token" } -InFile $zip `
+          -ContentType 'application/zip' $u -ErrorAction Stop | Out-Null
+      }
+      Add-Content "$soak\upload.log" ("$stamp ok {0} bytes, {1} skipped" -f (Get-Item $zip).Length, $skipped)
+    } catch {
+      Add-Content "$soak\upload.log" "$stamp FAILED: $($_.Exception.Message)"
+      Write-Output "upload FAILED: $($_.Exception.Message)"
     }
     # Rotate osquery result logs locally so uploads stay small.
     Get-ChildItem "$soak\osquery" -Filter '*.log' | Where-Object { $_.Length -gt 50MB } |
-      ForEach-Object { Move-Item -Force $_.FullName ($_.FullName + '.1') }
+      ForEach-Object { Move-Item -Force $_.FullName ($_.FullName + '.1') -ErrorAction SilentlyContinue }
   }
 }
