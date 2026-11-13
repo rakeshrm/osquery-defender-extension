@@ -2,14 +2,16 @@ package tables
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/huntbase-io/osquery-defender/internal/mpengine"
 	"github.com/osquery/osquery-go"
@@ -18,9 +20,12 @@ import (
 
 // Config is shared by all table plugins.
 type Config struct {
-	Cache       *mpengine.Cache // shared snapshot cache (required)
-	DefaultPath string          // --mpengine_path; "" = mpengine.DefaultDir on Windows, none elsewhere
-	Logger      *slog.Logger    // nil = slog.Default()
+	Cache         *mpengine.Cache // shared snapshot cache (required)
+	DefaultPath   string          // --mpengine_path; "" = mpengine.DefaultDir on Windows, none elsewhere
+	Logger        *slog.Logger    // nil = slog.Default()
+	QueryTimeout  time.Duration   // --query_timeout: deadline per table generate; <= 0 = none
+	MaxRows       int             // --max_rows: cap per source table per path; <= 0 = none
+	AllowUNCPaths bool            // --allow_unc_paths: accept \\server\share, \\.\ and \\?\ paths
 }
 
 type tableDef struct {
@@ -91,21 +96,79 @@ func (cfg Config) paths(qc table.QueryContext) []string {
 	return nil
 }
 
+// checkPath rejects sources the extension (running as SYSTEM) must not
+// open on a query's behalf: UNC and device-namespace paths (which would also
+// leak the machine's NTLM credentials to a remote host) unless allowed, and
+// files whose name does not start with "mpenginedb". Directories are fine;
+// they resolve to <dir>/mpenginedb.db. The operator's --mpengine_path is
+// trusted.
+func (cfg Config) checkPath(p string) error {
+	if p == cfg.DefaultPath {
+		return nil
+	}
+	if !cfg.AllowUNCPaths && (len(p) >= 2 && isSlash(p[0]) && isSlash(p[1]) || strings.HasPrefix(p, `\??\`)) {
+		return fmt.Errorf("path rejected: UNC and device paths need --allow_unc_paths: %s", p)
+	}
+	if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+		return checkDBName(p)
+	}
+	return nil
+}
+
+func checkDBName(p string) error {
+	if !hasPrefixFold(filepath.Base(p), "mpenginedb") {
+		return fmt.Errorf("path rejected: file name must start with mpenginedb: %s", p)
+	}
+	return nil
+}
+
+func isSlash(c byte) bool { return c == '\\' || c == '/' }
+
+// with runs fn on the snapshot of p after checking the path (and the
+// resolved database name).
+func (cfg Config) with(p string, fn func(s *mpengine.Snapshot) error) error {
+	if err := cfg.checkPath(p); err != nil {
+		return err
+	}
+	return cfg.Cache.With(p, func(s *mpengine.Snapshot) error {
+		if p != cfg.DefaultPath {
+			if err := checkDBName(s.Info.DBPath); err != nil {
+				return err
+			}
+		}
+		return fn(s)
+	})
+}
+
 // each runs fn on the snapshot of every selected path, logging and skipping
-// paths that fail.
+// paths that fail or are rejected.
 func (cfg Config) each(qc table.QueryContext, name string, fn func(path string, s *mpengine.Snapshot) error) {
 	for _, p := range cfg.paths(qc) {
-		if err := cfg.Cache.With(p, func(s *mpengine.Snapshot) error { return fn(p, s) }); err != nil {
+		if err := cfg.with(p, func(s *mpengine.Snapshot) error { return fn(p, s) }); err != nil {
 			cfg.Logger.Warn("query failed", "table", name, "path", p, "err", err)
 		}
 	}
 }
 
+// deadline bounds one table generate by QueryTimeout.
+func (cfg Config) deadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if cfg.QueryTimeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, cfg.QueryTimeout)
+}
+
+func (cfg Config) reader(p string, s *mpengine.Snapshot) reader {
+	return reader{db: s.DB, maxRows: cfg.MaxRows, log: cfg.Logger, path: p}
+}
+
 func (cfg Config) typed(s Spec) table.GenerateFunc {
 	return func(ctx context.Context, qc table.QueryContext) ([]map[string]string, error) {
+		ctx, cancel := cfg.deadline(ctx)
+		defer cancel()
 		var out []map[string]string
 		cfg.each(qc, s.Name, func(p string, snap *mpengine.Snapshot) error {
-			rows, err := s.rows(ctx, snap.DB)
+			rows, err := s.rows(ctx, cfg.reader(p, snap))
 			for _, r := range rows {
 				r["path"] = p
 			}
@@ -158,8 +221,8 @@ func queueType(t string) string {
 
 // prepRollingQueues joins RollingQueuesTables (on ifnull(Namespace,”)||Name)
 // and parses pid/ProcessStart from EntryTable, EntryKey or EntryValue.
-func prepRollingQueues(ctx context.Context, db *sql.DB) (func(Row), error) {
-	qs, err := readTable(ctx, db, "RollingQueuesTables")
+func prepRollingQueues(ctx context.Context, rd reader) (func(Row), error) {
+	qs, err := readTable(ctx, rd, "RollingQueuesTables")
 	if err != nil {
 		return nil, err
 	}
@@ -183,8 +246,8 @@ func prepRollingQueues(ctx context.Context, db *sql.DB) (func(Row), error) {
 }
 
 // prepInventory attaches the sorted, comma-joined vulnerability IDs.
-func prepInventory(ctx context.Context, db *sql.DB) (func(Row), error) {
-	vs, err := readTable(ctx, db, "MetaInventoryIdentifierVulnerabilities")
+func prepInventory(ctx context.Context, rd reader) (func(Row), error) {
+	vs, err := readTable(ctx, rd, "MetaInventoryIdentifierVulnerabilities")
 	if err != nil {
 		return nil, err
 	}

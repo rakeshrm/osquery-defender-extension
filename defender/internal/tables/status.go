@@ -14,17 +14,19 @@ var statusCols = []string{
 	"db_path", "wal_path", "+db_size", "+wal_size", "db_sha256", "wal_sha256",
 	"protection", "key_source", "keystream_sha256", "+derived_low_confidence",
 	"+page_size", "+db_pages", "+wal_header_valid", "+wal_frames_total",
-	"+wal_frames_committed", "+wal_commits", "wal_note", "integrity_check",
+	"+wal_frames_committed", "+wal_commits", "wal_note", "quick_check", "integrity_check",
 	"+table_count", "error", "path",
 }
 
 // defender_mpengine_status: one row per path; failures are reported in
 // `error` instead of being dropped.
 func (cfg Config) statusGen(ctx context.Context, qc table.QueryContext) ([]map[string]string, error) {
+	ctx, cancel := cfg.deadline(ctx)
+	defer cancel()
 	var out []map[string]string
 	for _, p := range cfg.paths(qc) {
 		row := map[string]string{}
-		err := cfg.Cache.With(p, func(s *mpengine.Snapshot) error {
+		err := cfg.with(p, func(s *mpengine.Snapshot) error {
 			i := s.Info
 			itoa := strconv.Itoa
 			row = map[string]string{
@@ -37,9 +39,9 @@ func (cfg Config) statusGen(ctx context.Context, qc table.QueryContext) ([]map[s
 				"wal_header_valid": itoa(boolInt(i.WALHeaderValid)),
 				"wal_frames_total": itoa(i.WALFramesTotal), "wal_frames_committed": itoa(i.WALFramesCommitted),
 				"wal_commits": itoa(i.WALCommits), "wal_note": i.WALNote,
-				"integrity_check": "ok",
+				"quick_check": i.QuickCheck, "integrity_check": "ok",
 			}
-			_, rows, err := query(ctx, s.DB, "PRAGMA integrity_check")
+			_, rows, err := query(ctx, s.DB, 0, "PRAGMA integrity_check")
 			if err != nil {
 				row["integrity_check"] = err.Error()
 			} else if len(rows) > 0 {

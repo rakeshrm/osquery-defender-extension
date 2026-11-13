@@ -80,11 +80,32 @@ Key decisions:
 * **Never write to the evidence.** Files are read-only; on Windows they are
   opened with `FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE` (and
   `FILE_FLAG_BACKUP_SEMANTICS`) because MsMpEng.exe holds them open.
-  DB and WAL are each read in one pass; a torn read surfaces as a broken WAL
-  checksum chain (frames after the break are ignored), never as bad data.
+  Only regular files are read (a directory resolves to `<dir>/mpenginedb.db`);
+  db+wal are capped at `--max_db_bytes` (default 1 GiB) before and while
+  reading.
+* **Torn reads.** DB and WAL size+mtime (and the WAL salts) are taken before
+  reading and compared after; on a change the read is repeated (at most 3
+  attempts, then used as is). `PRAGMA quick_check` runs on every open
+  (`Info.QuickCheck`); a failure with a known key or plaintext image re-reads
+  once, then the snapshot is served and status reports it. A derived key must
+  pass `integrity_check` (also for `--decrypt`, which otherwise writes
+  nothing and exits non-zero).
 * **Snapshot cache.** One decrypted snapshot per source path, reused while DB
-  and WAL size+mtime are unchanged and younger than `--cache_ttl` (default
-  30s), so a pack hitting 10 tables decrypts once.
+  and WAL size+mtime (taken *before* reading) are unchanged and younger than
+  `--cache_ttl` (default 30s), so a pack hitting 10 tables decrypts once.
+  Failed opens are cached the same way. `--cache_ttl 0` disables caching.
+  Builds are single-flight per path (different paths build in parallel);
+  expired unused entries are closed on every lookup and at most
+  `--cache_entries` (default 8, LRU) are kept. Before a cached snapshot is
+  handed out its `PRAGMA page_count` is checked, so a connection database/sql
+  silently replaced with an empty `:memory:` DB triggers a rebuild.
+* **Hostile input.** The evidence is untrusted. Snapshots run with
+  `query_only=1`, `trusted_schema=OFF`, `temp_store=MEMORY` (nothing spills to
+  temp files). Only ordinary tables are read (views and virtual tables count
+  as missing). Every table generate has a deadline (`--query_timeout`,
+  default 30s) and reads at most `--max_rows` (default 500000) rows per source
+  table per path (a warning is logged when truncated). TEXT in DATE/TIME
+  declared columns is returned as stored (no driver time parsing).
 * **Schema-tolerant.** Each typed table reads `pragma table_info` and selects
   only the columns that exist; missing columns yield empty values and a
   missing table yields zero rows. Engine builds can change the schema.
@@ -92,7 +113,11 @@ Key decisions:
   selects the source (e.g. a collected copy). Without it the default is
   `C:\ProgramData\Microsoft\Windows Defender\Scans` on Windows, overridable
   with `--mpengine_path`; on other OSes a path constraint is required (zero
-  rows otherwise). Multiple `=` constraints / `IN` are supported.
+  rows otherwise). Multiple `=` constraints / `IN` are supported. A queried
+  `path` must not be UNC / device-namespace (`\\`, `//`, `\\.\`, `\\?\`,
+  `\??\`) unless `--allow_unc_paths`, and a file must be named `mpenginedb*`
+  (case-insensitive); rejected paths are skipped with a warning, and status
+  reports `path rejected: ...`. `--mpengine_path` itself is trusted.
 
 ## Public API contract — `internal/mpengine`
 
@@ -102,6 +127,7 @@ const DefaultDir = `C:\ProgramData\Microsoft\Windows Defender\Scans`
 type Options struct {
     DeriveKey bool   // ignore known keys, derive from evidence
     WALPath   string // explicit WAL path; default: <db>-wal, then <db>~wal
+    MaxBytes  int64  // cap on db+wal bytes; <= 0 = DefaultMaxBytes (1 GiB)
 }
 
 type Info struct {
@@ -118,9 +144,12 @@ type Info struct {
     WALFramesCommitted        int
     WALCommits                int
     WALNote                   string
+    ReadAttempts              int    // reads needed for an unchanged copy (1..3)
+    QuickCheck                string // "ok" or first line of PRAGMA quick_check (set by Open)
 }
 
-// Resolve accepts a file or a directory containing mpenginedb.db and returns db + wal paths ("" if no WAL).
+// Resolve accepts a file or a directory containing mpenginedb.db and returns
+// db + wal paths ("" if no WAL); both must be regular files.
 func Resolve(path string, opt Options) (dbPath, walPath string, err error)
 // Decrypt returns a plaintext SQLite image with committed WAL frames applied
 // and header bytes 18/19 set to 1.
@@ -133,9 +162,11 @@ type Snapshot struct {
 }
 func Open(path string, opt Options) (*Snapshot, error)
 func (s *Snapshot) Close() error
+// IntegrityCheck loads an image in memory and returns PRAGMA integrity_check's first line.
+func IntegrityCheck(img []byte) (string, error)
 
 type Cache struct{ /* … */ }
-func NewCache(ttl time.Duration, opt Options) *Cache
+func NewCache(ttl time.Duration, maxEntries int, opt Options) *Cache // ttl <= 0: no caching; maxEntries <= 0: 8
 // With runs fn with a cached (or freshly built) snapshot for path. Safe for
 // concurrent use; a snapshot is never closed while fn is running on it.
 func (c *Cache) With(path string, fn func(*Snapshot) error) error
@@ -168,7 +199,7 @@ also has `path` (TEXT).
 | `defender_mpengine_inventory_identifiers` | `MetaInventoryIdentifiers` + `MetaInventoryIdentifierVulnerabilities(Identifier, VulnerabilityId)` | identifier, kind, kind_name (1=cpe, 2=purl), vulnerabilities (comma-joined, sorted) |
 | `defender_mpengine_tables` | `sqlite_master` | table_name, row_count, sql |
 | `defender_mpengine_raw` | any table | table_name, row_id (ordinal), column_name, value (text; blob=hex), value_type. Honors `table_name =` constraint. |
-| `defender_mpengine_status` | `Info` + `pragma integrity_check` | db_path, wal_path, db_size, wal_size, db_sha256, wal_sha256, protection, key_source, keystream_sha256, derived_low_confidence, page_size, db_pages, wal_header_valid, wal_frames_total, wal_frames_committed, wal_commits, wal_note, integrity_check, table_count, error |
+| `defender_mpengine_status` | `Info` + `pragma integrity_check` | db_path, wal_path, db_size, wal_size, db_sha256, wal_sha256, protection, key_source, keystream_sha256, derived_low_confidence, page_size, db_pages, wal_header_valid, wal_frames_total, wal_frames_committed, wal_commits, wal_note, quick_check (from Open), integrity_check, table_count, error |
 
 Decoding details (match the reference parser / smap):
 
@@ -181,8 +212,10 @@ Decoding details (match the reference parser / smap):
 
 ```
 defender-mpengine.ext --socket <p> [--timeout s] [--interval s] [--verbose]
-                      [--mpengine_path <file|dir>] [--cache_ttl 30s] [--derive_key]
-defender-mpengine.ext --decrypt <file|dir> --out <plain.db> [--wal <file>] [--derive_key]   # offline helper
+                      [--mpengine_path <file|dir>] [--cache_ttl 30s] [--cache_entries 8]
+                      [--query_timeout 30s] [--max_rows 500000] [--max_db_bytes 1073741824]
+                      [--allow_unc_paths] [--derive_key]
+defender-mpengine.ext --decrypt <file|dir> --out <plain.db> [--wal <file>] [--derive_key] [--max_db_bytes n]   # offline helper
 defender-mpengine.ext --version
 ```
 

@@ -2,10 +2,8 @@
 
 package mpengine
 
-import (
-	"os"
-)
+import "os"
 
-func readFile(path string) ([]byte, error) {
-	return os.ReadFile(path)
+func openShared(path string) (*os.File, error) {
+	return os.Open(path)
 }

@@ -213,3 +213,17 @@ func TestWALFrameBounds(t *testing.T) {
 		})
 	}
 }
+
+// Finding 4: Open always runs PRAGMA quick_check and records it.
+func TestOracleQuickCheck(t *testing.T) {
+	for _, name := range []string{"known_key", "plain", "corrupt_wal", "no_wal"} {
+		snap, err := mpengine.Open(oracleDir(name), mpengine.Options{})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if snap.Info.QuickCheck != "ok" || snap.Info.ReadAttempts != 1 {
+			t.Errorf("%s: QuickCheck=%q ReadAttempts=%d", name, snap.Info.QuickCheck, snap.Info.ReadAttempts)
+		}
+		snap.Close()
+	}
+}

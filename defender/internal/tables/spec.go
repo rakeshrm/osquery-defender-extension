@@ -9,11 +9,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/osquery/osquery-go/plugin/table"
 )
@@ -39,8 +40,8 @@ const (
 )
 
 // Row is one source row keyed by source column name (plus keys added by
-// From.Set or Spec.Prep). Values are int64, float64, string, []byte,
-// time.Time or nil.
+// From.Set or Spec.Prep). Values are int64, float64, string, []byte or nil
+// (date/time-declared columns are read as stored, see readTable).
 type Row map[string]any
 
 // Col maps one output column. The value is Fn(row) when Fn is set (a computed
@@ -65,7 +66,7 @@ type Spec struct {
 	Cols []Col
 	// Prep optionally loads auxiliary data (joins) once per snapshot query
 	// and returns a function that enriches each source row.
-	Prep func(ctx context.Context, db *sql.DB) (func(Row), error)
+	Prep func(ctx context.Context, rd reader) (func(Row), error)
 }
 
 func (s Spec) columns() []table.ColumnDefinition {
@@ -83,17 +84,17 @@ func (s Spec) columns() []table.ColumnDefinition {
 	return append(defs, table.TextColumn("path"))
 }
 
-func (s Spec) rows(ctx context.Context, db *sql.DB) ([]map[string]string, error) {
+func (s Spec) rows(ctx context.Context, rd reader) ([]map[string]string, error) {
 	var enrich func(Row)
 	if s.Prep != nil {
 		var err error
-		if enrich, err = s.Prep(ctx, db); err != nil {
+		if enrich, err = s.Prep(ctx, rd); err != nil {
 			return nil, err
 		}
 	}
 	var out []map[string]string
 	for _, f := range s.From {
-		src, err := readTable(ctx, db, f.Table)
+		src, err := readTable(ctx, rd, f.Table)
 		if err != nil {
 			return nil, err
 		}
@@ -165,11 +166,6 @@ func text(v any) string {
 		return strconv.FormatInt(x, 10)
 	case float64:
 		return strconv.FormatFloat(x, 'g', -1, 64)
-	case time.Time: // modernc parses TEXT in DATE/DATETIME/TIMESTAMP columns
-		if x.Location() == time.UTC {
-			return x.Format("2006-01-02 15:04:05.999999999")
-		}
-		return x.Format("2006-01-02 15:04:05.999999999-07:00")
 	default:
 		return fmt.Sprint(x)
 	}
@@ -215,23 +211,59 @@ func guidLE(b []byte) string {
 
 // --- schema-tolerant reading ---
 
+// reader reads one snapshot with a per-table row cap (maxRows <= 0: none).
+type reader struct {
+	db      *sql.DB
+	maxRows int
+	log     *slog.Logger
+	path    string
+}
+
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-// readTable returns all rows of tbl, selecting only the columns that exist
-// (per pragma table_info). A missing table yields no rows and no error.
-func readTable(ctx context.Context, db *sql.DB, tbl string) ([]Row, error) {
-	_, names, err := query(ctx, db, `SELECT name FROM pragma_table_info(?)`, tbl)
+// isTable reports whether tbl is an ordinary table. Views, virtual tables
+// and anything else are treated as missing: a hostile schema could otherwise
+// make a "table" an arbitrarily expensive query.
+func isTable(ctx context.Context, db *sql.DB, tbl string) (bool, error) {
+	_, rows, err := query(ctx, db, 0, `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE
+		AND rootpage > 0 AND upper(ltrim(sql)) NOT LIKE 'CREATE VIRTUAL%'`, tbl)
+	return len(rows) > 0, err
+}
+
+// selectList returns the SELECT expressions for every column of tbl (per
+// pragma table_info). Columns declared with DATE or TIME in their type are
+// selected as stored, because modernc.org/sqlite would otherwise turn such
+// TEXT values into time.Time.
+func selectList(ctx context.Context, db *sql.DB, tbl string) ([]string, error) {
+	_, info, err := query(ctx, db, 0, `SELECT name, type FROM pragma_table_info(?)`, tbl)
 	if err != nil {
 		return nil, err
 	}
-	if len(names) == 0 {
-		return nil, nil
+	sel := make([]string, len(info))
+	for i, c := range info {
+		q, typ := quoteIdent(text(c[0])), strings.ToUpper(text(c[1]))
+		if strings.Contains(typ, "DATE") || strings.Contains(typ, "TIME") {
+			// CASE has no declared type, so values keep their storage class.
+			sel[i] = "CASE typeof(" + q + ") WHEN 'text' THEN CAST(" + q + " AS TEXT) ELSE " + q + " END AS " + q
+		} else {
+			sel[i] = q
+		}
 	}
-	sel := make([]string, len(names))
-	for i, n := range names {
-		sel[i] = quoteIdent(text(n[0]))
+	return sel, nil
+}
+
+// readTable returns the rows of tbl (at most rd.maxRows, with a warning when
+// truncated), selecting only the columns that exist. A missing table, or an
+// object that is not an ordinary table, yields no rows and no error.
+func readTable(ctx context.Context, rd reader, tbl string) ([]Row, error) {
+	if ok, err := isTable(ctx, rd.db, tbl); err != nil || !ok {
+		return nil, err
 	}
-	cols, vals, err := query(ctx, db, "SELECT "+strings.Join(sel, ", ")+" FROM "+quoteIdent(tbl))
+	sel, err := selectList(ctx, rd.db, tbl)
+	if err != nil || len(sel) == 0 {
+		return nil, err
+	}
+	cols, vals, err := rd.query(ctx, tbl, "SELECT "+strings.Join(sel, ", ")+" FROM "+quoteIdent(tbl))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", tbl, err)
 	}
@@ -246,8 +278,24 @@ func readTable(ctx context.Context, db *sql.DB, tbl string) ([]Row, error) {
 	return rows, nil
 }
 
-// query runs q and returns the column names and all row values.
-func query(ctx context.Context, db *sql.DB, q string, args ...any) ([]string, [][]any, error) {
+// query runs q with the row cap of rd, logging a warning when it truncates.
+func (rd reader) query(ctx context.Context, tbl, q string, args ...any) ([]string, [][]any, error) {
+	cols, vals, err := query(ctx, rd.db, rd.maxRows, q, args...)
+	if err == errTruncated {
+		if rd.log != nil {
+			rd.log.Warn("row limit reached; returning partial rows", "table", tbl, "path", rd.path, "max_rows", rd.maxRows)
+		}
+		err = nil
+	}
+	return cols, vals, err
+}
+
+// errTruncated is returned (with the rows read so far) when query stops at max.
+var errTruncated = errors.New("row limit reached")
+
+// query runs q and returns the column names and row values. With max > 0 it
+// stops after max rows and returns errTruncated if more were available.
+func query(ctx context.Context, db *sql.DB, max int, q string, args ...any) ([]string, [][]any, error) {
 	rs, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, nil, err
@@ -259,6 +307,9 @@ func query(ctx context.Context, db *sql.DB, q string, args ...any) ([]string, []
 	}
 	var out [][]any
 	for rs.Next() {
+		if max > 0 && len(out) >= max {
+			return cols, out, errTruncated
+		}
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
 		for i := range vals {

@@ -43,7 +43,8 @@ reference parser and SQLECmd map.
    written to disk.
 4. **Cache.** One snapshot per source path is reused while the DB and WAL
    size+mtime are unchanged and it is younger than `--cache_ttl` (default
-   30s), so a pack hitting many tables decrypts once.
+   30s), so a pack hitting many tables decrypts once. Failed opens are cached
+   too; at most `--cache_entries` snapshots are kept.
 
 ## Tables
 
@@ -69,7 +70,7 @@ column; blobs are lowercase hex; GUIDs are decoded to `8-4-4-4-12`.
 | `defender_mpengine_inventory_identifiers` | MetaInventoryIdentifiers(+Vulnerabilities) | software inventory (CPE / purl) with associated vulnerability IDs |
 | `defender_mpengine_tables` | sqlite_master | every table in the DB with row count and DDL |
 | `defender_mpengine_raw` | any table | generic dump, one row per cell; honours `table_name =` |
-| `defender_mpengine_status` | decryptor + `pragma integrity_check` | source files and hashes, protection, key source, WAL replay stats, integrity check, error |
+| `defender_mpengine_status` | decryptor + `pragma quick_check` / `integrity_check` | source files and hashes, protection, key source, WAL replay stats, quick_check (at decrypt time), integrity_check, table_count, error |
 
 Column lists: [docs/DESIGN.md](docs/DESIGN.md#tables).
 
@@ -125,7 +126,12 @@ defender-mpengine-windows-amd64.ext.exe --decrypt D:\case\Scans --out D:\case\mp
 --timeout <s>, --interval <s> extension server timeout / ping interval
 --verbose                    verbose logging
 --mpengine_path <file|dir>   default source (default on Windows: C:\ProgramData\Microsoft\Windows Defender\Scans)
---cache_ttl 30s              snapshot cache lifetime
+--cache_ttl 30s              snapshot (and failed-open) cache lifetime; 0 = no caching
+--cache_entries 8            max cached snapshots (LRU)
+--query_timeout 30s          deadline per table query; 0 = none
+--max_rows 500000            max rows read per source table per path (warning logged); 0 = unlimited
+--max_db_bytes 1073741824    refuse db+wal larger than this (also for --decrypt)
+--allow_unc_paths            allow UNC / device paths (\\server\share, \\.\, \\?\) in path =
 --derive_key                 ignore known keys; derive the keystream from the evidence
 --decrypt <file|dir> --out <plain.db> [--wal <file>] [--derive_key]   offline decrypt, then exit
 --version                    print version and exit
@@ -137,6 +143,16 @@ Interactive:
 
 ```
 osqueryi --extension bin\defender-mpengine-windows-amd64.ext.exe --allow-unsafe
+```
+
+When passing a query on the command line, add
+`--extensions_require=defender_mpengine` so osqueryi waits for the extension
+to register before running it:
+
+```
+osqueryi --extension bin\defender-mpengine-windows-amd64.ext.exe --allow-unsafe ^
+  --extensions_require=defender_mpengine ^
+  "SELECT * FROM defender_mpengine_status;"
 ```
 
 Autoload with osqueryd: list the binary's absolute path in `extensions.load`
@@ -158,7 +174,19 @@ A ready-made Windows pack is in [pack/defender_mpengine.conf](pack/defender_mpen
 - **Privileges.** Reading the `Scans` folder requires SYSTEM/administrator;
   osqueryd runs as SYSTEM.
 - **Derived keys are verified.** A keystream derived from the evidence is only
-  accepted if the decrypted DB passes `pragma integrity_check`.
+  accepted if the decrypted DB passes `pragma integrity_check`; `--decrypt`
+  writes nothing and exits non-zero otherwise.
+- **`path` is restricted.** Queries run as SYSTEM, so a `path =` constraint
+  may not be a UNC or device path (`\\server\share`, `//server/share`, `\\.\`,
+  `\\?\`, `\??\` — opening one would also send the machine's NTLM credentials
+  to that host) unless `--allow_unc_paths` is set, and a file must be named
+  `mpenginedb*` (directories resolve to `mpenginedb.db`). Rejected paths
+  return no rows (status: `error = 'path rejected: ...'`). `--mpengine_path`
+  is trusted.
+- **Untrusted evidence.** Only ordinary tables are read (views/virtual tables
+  count as missing), with `trusted_schema=OFF` and in-memory temp storage.
+  Each table query is bounded by `--query_timeout` and `--max_rows`, input
+  size by `--max_db_bytes`, and only regular files are read.
 
 ## Limitations
 

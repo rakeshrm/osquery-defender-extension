@@ -196,7 +196,7 @@ func DeriveKeystream(pages [][]byte, frames [][]byte, ps int) ([]byte, int) {
 		key[4] = bestK[1]
 	}
 
-	votes := make([][256]int, ps)
+	votes := make([][256]uint32, ps) // uint32: half the size of int on 64-bit (64 MiB at 64K pages)
 	for _, p := range nonroot {
 		t := p[0] ^ key[0]
 		if t != 2 && t != 5 && t != 10 && t != 13 {
@@ -229,7 +229,7 @@ func DeriveKeystream(pages [][]byte, frames [][]byte, ps int) ([]byte, int) {
 		bestVal := 0
 		maxCount := 0
 		for v := 0; v < 256; v++ {
-			cnt := votes[i][v]
+			cnt := int(votes[i][v])
 			total += cnt
 			if cnt > maxCount {
 				maxCount = cnt

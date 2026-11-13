@@ -10,14 +10,30 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 const DefaultDir = `C:\ProgramData\Microsoft\Windows Defender\Scans`
+
+// DefaultMaxBytes is the default cap on db+wal size read by Decrypt.
+const DefaultMaxBytes int64 = 1 << 30
+
+// readAttempts bounds how often Decrypt re-reads files that changed while
+// they were being read.
+const readAttempts = 3
 
 // Options controls decryption and path resolution.
 type Options struct {
 	DeriveKey bool   // ignore known keys, derive from evidence
 	WALPath   string // explicit WAL path; default: <db>-wal, then <db>~wal
+	MaxBytes  int64  // cap on db+wal bytes read; <= 0 means DefaultMaxBytes
+}
+
+func (o Options) maxBytes() int64 {
+	if o.MaxBytes <= 0 {
+		return DefaultMaxBytes
+	}
+	return o.MaxBytes
 }
 
 // Info contains metadata about the decrypted database and evidence files.
@@ -35,9 +51,14 @@ type Info struct {
 	WALFramesCommitted   int
 	WALCommits           int
 	WALNote              string
+	ReadAttempts         int    // reads needed for a stable (unchanged) copy of db+wal
+	QuickCheck           string `json:",omitempty"` // PRAGMA quick_check: "ok" or its first line (set by Open)
+
+	sig signature // file signature taken before the bytes were read
 }
 
-// Resolve accepts a file or a directory containing mpenginedb.db and returns db + wal paths ("" if no WAL).
+// Resolve accepts a file or a directory containing mpenginedb.db and returns
+// db + wal paths ("" if no WAL). The database and WAL must be regular files.
 func Resolve(path string, opt Options) (dbPath, walPath string, err error) {
 	if path == "" {
 		return "", "", errors.New("empty path")
@@ -49,55 +70,153 @@ func Resolve(path string, opt Options) (dbPath, walPath string, err error) {
 	}
 
 	if fi.IsDir() {
-		candidate := filepath.Join(cleanPath, "mpenginedb.db")
-		if _, err := os.Stat(candidate); err != nil {
+		dbPath = filepath.Join(cleanPath, "mpenginedb.db")
+		if fi, err = os.Stat(dbPath); err != nil {
 			return "", "", fmt.Errorf("mpenginedb.db not found in %s: %w", cleanPath, err)
 		}
-		dbPath = candidate
 	} else {
 		dbPath = cleanPath
+	}
+	if !fi.Mode().IsRegular() {
+		return "", "", fmt.Errorf("%s: not a regular file", dbPath)
 	}
 
 	if opt.WALPath != "" {
 		cleanWAL := filepath.Clean(opt.WALPath)
-		if _, err := os.Stat(cleanWAL); err != nil {
+		wfi, err := os.Stat(cleanWAL)
+		if err != nil {
 			return "", "", fmt.Errorf("explicit WAL path not found: %w", err)
+		}
+		if !wfi.Mode().IsRegular() {
+			return "", "", fmt.Errorf("%s: not a regular file", cleanWAL)
 		}
 		walPath = cleanWAL
 	} else {
-		cand1 := dbPath + "-wal"
-		cand2 := dbPath + "~wal"
-		if _, err := os.Stat(cand1); err == nil {
-			walPath = cand1
-		} else if _, err := os.Stat(cand2); err == nil {
-			walPath = cand2
+		for _, cand := range []string{dbPath + "-wal", dbPath + "~wal"} {
+			wfi, err := os.Stat(cand)
+			if err != nil {
+				continue
+			}
+			if !wfi.Mode().IsRegular() {
+				return "", "", fmt.Errorf("%s: not a regular file", cand)
+			}
+			walPath = cand
+			break
 		}
 	}
 
 	return dbPath, walPath, nil
 }
 
+type fileStat struct {
+	size    int64
+	modTime time.Time
+}
+
+// signature identifies the resolved files and their size+mtime. err is set
+// (and the rest empty) when the path does not resolve. Comparable.
+type signature struct {
+	dbPath, walPath string
+	db, wal         fileStat
+	err             string
+}
+
+func statFile(path string) (fileStat, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileStat{}, err
+	}
+	return fileStat{size: fi.Size(), modTime: fi.ModTime()}, nil
+}
+
+// currentSignature resolves path and stats the db and WAL files.
+func currentSignature(path string, opt Options) signature {
+	dbPath, walPath, err := Resolve(path, opt)
+	if err != nil {
+		return signature{err: err.Error()}
+	}
+	s := signature{dbPath: dbPath, walPath: walPath}
+	if s.db, err = statFile(dbPath); err != nil {
+		return signature{err: err.Error()}
+	}
+	if walPath != "" {
+		if s.wal, err = statFile(walPath); err != nil {
+			return signature{err: err.Error()}
+		}
+	}
+	return s
+}
+
+// readFileHook reads evidence files; replaced in tests.
+var readFileHook = readFile
+
+// readStable reads db and wal, re-reading (up to readAttempts) when their
+// size, mtime or WAL salts changed during the read. It returns the signature
+// taken before the final read.
+func readStable(path string, opt Options) (dbBytes, walBytes []byte, sig signature, attempts int, err error) {
+	limit := opt.maxBytes()
+	for attempts = 1; ; attempts++ {
+		sig = currentSignature(path, opt)
+		if sig.err != "" {
+			return nil, nil, sig, attempts, errors.New(sig.err)
+		}
+		if total := sig.db.size + sig.wal.size; total > limit {
+			return nil, nil, sig, attempts, fmt.Errorf("db+wal size %d exceeds limit %d (--max_db_bytes)", total, limit)
+		}
+		var salts []byte
+		if sig.walPath != "" {
+			salts = readWALSalts(sig.walPath)
+		}
+		dbBytes, err = readFileHook(sig.dbPath, limit)
+		if err != nil {
+			return nil, nil, sig, attempts, fmt.Errorf("read db: %w", err)
+		}
+		walBytes = nil
+		if sig.walPath != "" {
+			walBytes, err = readFileHook(sig.walPath, limit-int64(len(dbBytes)))
+			if err != nil {
+				return nil, nil, sig, attempts, fmt.Errorf("read wal: %w", err)
+			}
+		}
+		stable := currentSignature(path, opt) == sig
+		if stable && sig.walPath != "" {
+			var got []byte
+			if len(walBytes) >= 24 {
+				got = walBytes[16:24]
+			}
+			stable = bytes.Equal(salts, got)
+		}
+		if stable || attempts >= readAttempts {
+			return dbBytes, walBytes, sig, attempts, nil
+		}
+	}
+}
+
 // Decrypt returns a plaintext SQLite image with committed WAL frames applied
 // and header bytes 18/19 set to 1.
 func Decrypt(path string, opt Options) ([]byte, *Info, error) {
-	dbPath, walPath, err := Resolve(path, opt)
+	img, info, err := decrypt(path, opt)
 	if err != nil {
 		return nil, nil, err
 	}
+	return img, info, nil
+}
 
-	dbBytes, err := readFile(dbPath)
+func decrypt(path string, opt Options) ([]byte, *Info, error) {
+	dbBytes, walBytes, sig, attempts, err := readStable(path, opt)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read db: %w", err)
+		return nil, &Info{sig: sig}, err
 	}
-
-	var walBytes []byte
-	if walPath != "" {
-		walBytes, err = readFile(walPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read wal: %w", err)
-		}
+	img, info, err := decode(sig.dbPath, sig.walPath, dbBytes, walBytes, opt)
+	if info == nil {
+		info = &Info{}
 	}
+	info.sig, info.ReadAttempts = sig, attempts
+	return img, info, err
+}
 
+// decode decrypts dbBytes and replays the committed frames of walBytes.
+func decode(dbPath, walPath string, dbBytes, walBytes []byte, opt Options) ([]byte, *Info, error) {
 	if len(dbBytes) < 512 {
 		return nil, nil, fmt.Errorf("not a MetaVault/SQLite file: file size %d too small", len(dbBytes))
 	}

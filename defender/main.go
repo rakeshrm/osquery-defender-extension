@@ -33,7 +33,12 @@ func main() {
 		verbose   = fs.Bool("verbose", false, "debug logging")
 		version   = fs.Bool("version", false, "print version and exit")
 		mpPath    = fs.String("mpengine_path", "", "default mpenginedb.db file or Scans directory (default: "+mpengine.DefaultDir+" on Windows)")
-		cacheTTL  = fs.Duration("cache_ttl", 30*time.Second, "reuse a decrypted snapshot for this long while the files are unchanged")
+		cacheTTL  = fs.Duration("cache_ttl", 30*time.Second, "reuse a decrypted snapshot (or a failed open) for this long while the files are unchanged; 0 disables caching")
+		cacheMax  = fs.Int("cache_entries", mpengine.DefaultCacheEntries, "maximum number of cached snapshots (LRU)")
+		queryTO   = fs.Duration("query_timeout", 30*time.Second, "deadline for one table query (all paths); 0 = none")
+		maxRows   = fs.Int("max_rows", 500000, "maximum rows read per source table per path; 0 = unlimited")
+		maxBytes  = fs.Int64("max_db_bytes", mpengine.DefaultMaxBytes, "refuse a database whose db+wal size exceeds this many bytes")
+		allowUNC  = fs.Bool("allow_unc_paths", false, `allow path = '\\server\share\...' and \\.\ / \\?\ device paths in table queries`)
 		deriveKey = fs.Bool("derive_key", false, "ignore known keys and derive the keystream from the evidence")
 		decrypt   = fs.String("decrypt", "", "offline: decrypt this mpenginedb.db file or directory to --out and exit")
 		out       = fs.String("out", "", "offline: output path for --decrypt (must not exist)")
@@ -54,7 +59,7 @@ func main() {
 	case *version:
 		fmt.Println(Version)
 	case *decrypt != "":
-		if err := decryptTo(os.Stdout, *decrypt, *out, mpengine.Options{DeriveKey: *deriveKey, WALPath: *wal}); err != nil {
+		if err := decryptTo(os.Stdout, *decrypt, *out, mpengine.Options{DeriveKey: *deriveKey, WALPath: *wal, MaxBytes: *maxBytes}); err != nil {
 			log.Error("decrypt failed", "err", err)
 			os.Exit(1)
 		}
@@ -63,9 +68,10 @@ func main() {
 			log.Error("--socket is required (or use --decrypt / --version)")
 			os.Exit(2)
 		}
-		cache := mpengine.NewCache(*cacheTTL, mpengine.Options{DeriveKey: *deriveKey})
+		cache := mpengine.NewCache(*cacheTTL, *cacheMax, mpengine.Options{DeriveKey: *deriveKey, MaxBytes: *maxBytes})
 		err := serve(*socket, time.Duration(*timeout)*time.Second, time.Duration(*interval)*time.Second,
-			tables.Config{Cache: cache, DefaultPath: *mpPath, Logger: log})
+			tables.Config{Cache: cache, DefaultPath: *mpPath, Logger: log,
+				QueryTimeout: *queryTO, MaxRows: *maxRows, AllowUNCPaths: *allowUNC})
 		cache.Close()
 		if err != nil {
 			log.Error("extension stopped", "err", err)
@@ -92,7 +98,8 @@ func serve(socket string, timeout, interval time.Duration, cfg tables.Config) er
 }
 
 // decryptTo writes the plaintext image to out (refusing to overwrite, mode
-// 0600) and prints the Info as JSON to w.
+// 0600) and prints the Info as JSON to w. A derived keystream must produce an
+// image that passes PRAGMA integrity_check, otherwise nothing is written.
 func decryptTo(w io.Writer, src, out string, opt mpengine.Options) error {
 	if out == "" {
 		return fmt.Errorf("--out is required with --decrypt")
@@ -100,6 +107,15 @@ func decryptTo(w io.Writer, src, out string, opt mpengine.Options) error {
 	img, info, err := mpengine.Decrypt(src, opt)
 	if err != nil {
 		return err
+	}
+	if info.KeySource == "derived" {
+		ic, err := mpengine.IntegrityCheck(img)
+		if err != nil {
+			return fmt.Errorf("derived keystream: %w", err)
+		}
+		if ic != "ok" {
+			return fmt.Errorf("derived keystream did not produce a consistent database (%d low-confidence byte positions): integrity_check: %s", info.DerivedLowConfidence, ic)
+		}
 	}
 	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {

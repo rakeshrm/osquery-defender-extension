@@ -29,7 +29,7 @@ var knownKey = filepath.Join(oracle, "known_key")
 
 func testConfig(t *testing.T) Config {
 	t.Helper()
-	c := mpengine.NewCache(time.Minute, mpengine.Options{})
+	c := mpengine.NewCache(time.Minute, 0, mpengine.Options{})
 	t.Cleanup(c.Close)
 	return Config{Cache: c, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
@@ -333,7 +333,7 @@ func TestStatus(t *testing.T) {
 	}
 	r := rows[0]
 	for k, v := range map[string]string{
-		"protection": "rc4", "key_source": "known:1.1.26100.4", "wal_commits": "4", "integrity_check": "ok",
+		"protection": "rc4", "key_source": "known:1.1.26100.4", "wal_commits": "4", "integrity_check": "ok", "quick_check": "ok",
 		"table_count": "17", "wal_header_valid": "1", "error": "", "path": knownKey,
 	} {
 		if r[k] != v {

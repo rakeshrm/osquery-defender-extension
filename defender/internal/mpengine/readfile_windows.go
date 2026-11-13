@@ -3,7 +3,6 @@
 package mpengine
 
 import (
-	"io"
 	"os"
 	"syscall"
 )
@@ -12,7 +11,9 @@ const (
 	fileFlagBackupSemantics = 0x02000000
 )
 
-func readFile(path string) ([]byte, error) {
+// openShared opens path for reading without blocking Defender, which keeps
+// the database open for writing.
+func openShared(path string) (*os.File, error) {
 	path16, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
@@ -29,7 +30,5 @@ func readFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := os.NewFile(uintptr(h), path)
-	defer f.Close()
-	return io.ReadAll(f)
+	return os.NewFile(uintptr(h), path), nil
 }

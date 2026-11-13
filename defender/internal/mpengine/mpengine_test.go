@@ -397,7 +397,7 @@ func TestCache(t *testing.T) {
 	})
 	dbFile := filepath.Join(dir, "mpenginedb.db")
 
-	cache := mpengine.NewCache(30*time.Second, mpengine.Options{})
+	cache := mpengine.NewCache(30*time.Second, 0, mpengine.Options{})
 	defer cache.Close()
 
 	var firstCreated time.Time
