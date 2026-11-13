@@ -9,3 +9,4 @@ coverage.*
 # never commit real evidence
 *.db-wal
 mpenginedb.db
+.ref/

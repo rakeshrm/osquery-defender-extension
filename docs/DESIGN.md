@@ -117,6 +117,7 @@ type Info struct {
     WALFramesTotal            int
     WALFramesCommitted        int
     WALCommits                int
+    WALNote                   string
 }
 
 // Resolve accepts a file or a directory containing mpenginedb.db and returns db + wal paths ("" if no WAL).
