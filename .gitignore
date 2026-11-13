@@ -1,0 +1,11 @@
+bin/
+*.ext
+*.ext.exe
+*.out
+coverage.*
+.DS_Store
+.idea/
+.vscode/
+# never commit real evidence
+*.db-wal
+mpenginedb.db
