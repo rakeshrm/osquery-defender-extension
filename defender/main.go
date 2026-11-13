@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/osquery/osquery-go"
 	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 	"github.com/rakeshrm/osquery-defender-extension/internal/tables"
-	"github.com/osquery/osquery-go"
 )
 
 // Version is set at build time with -ldflags "-X main.Version=...".

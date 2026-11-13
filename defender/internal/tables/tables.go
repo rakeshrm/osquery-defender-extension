@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 	"github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 )
 
 // Config is shared by all table plugins.
