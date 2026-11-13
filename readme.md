@@ -137,6 +137,21 @@ defender-mpengine-windows-amd64.ext.exe --decrypt D:\case\Scans --out D:\case\mp
 --version                    print version and exit
 ```
 
+## Install
+
+Download the binary for your platform and `SHA256SUMS` from
+[Releases](https://github.com/rakeshrm/osquery-defender-extension/releases),
+then verify it:
+
+```powershell
+# Windows (PowerShell)
+(Get-FileHash .\defender-mpengine-windows-amd64.ext.exe -Algorithm SHA256).Hash.ToLower()
+Select-String defender-mpengine-windows-amd64.ext.exe .\SHA256SUMS
+```
+
+Each release also ships `defender_mpengine.conf`, the osquery pack. To build
+from source instead, see [Development](#development).
+
 ## Running
 
 Interactive:
@@ -246,3 +261,13 @@ schema — never row contents or the decrypted DB).
   as SYSTEM before and after generating some Defender activity (EICAR, new
   zip, unsigned exe), downloads the results and deletes everything.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please never attach real
+`mpenginedb.db` files to issues — share `scripts/windows-smoke.ps1` output
+instead.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The format research, built-in key and ASR list
+come from Protokol-7 (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -1,0 +1,48 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish a GitHub Release with the binaries for all
+# platforms, SHA256SUMS and the osquery pack.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: defender/go.mod
+          cache-dependency-path: defender/go.sum
+
+      - name: Test
+        working-directory: defender
+        run: go vet ./... && go test -race ./...
+
+      - name: Build
+        run: VERSION="${GITHUB_REF_NAME#v}" ./build.sh
+
+      - name: Verify version stamp
+        run: |
+          got="$(./bin/defender-mpengine-linux-amd64.ext --version)"
+          echo "binary reports: $got"
+          [ "$got" = "${GITHUB_REF_NAME#v}" ] || { echo "version mismatch"; exit 1; }
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp pack/defender_mpengine.conf bin/
+          (cd bin && sha256sum defender_mpengine.conf >> SHA256SUMS)
+          prerelease=""
+          case "$GITHUB_REF_NAME" in v0.*|*-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" bin/* \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $prerelease
