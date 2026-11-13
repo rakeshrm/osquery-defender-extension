@@ -111,7 +111,7 @@ def analyze_host(host, base):
 
     status_rows, status_errors, qc_bad, counts = 0, collections.Counter(), collections.Counter(), {}
     layouts = set()
-    for p in find(base, "osqueryd.results.log*"):
+    for p in find(base, "osqueryd.results.log*") + find(base, "osqueryd.snapshots.log*"):
         for line in read_lines(p):
             try:
                 rec = json.loads(line)

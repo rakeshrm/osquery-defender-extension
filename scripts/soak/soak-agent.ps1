@@ -12,6 +12,11 @@ $now = (Get-Date).ToUniversalTime()
 
 function Iso($t) { if ($t) { $t.ToUniversalTime().ToString('o') } else { '' } }
 
+# GCE instance name: unique, unlike COMPUTERNAME (NetBIOS, truncated to 15 chars).
+$hostId = try {
+  Invoke-RestMethod -Headers @{ 'Metadata-Flavor' = 'Google' } 'http://metadata.google.internal/computeMetadata/v1/instance/name'
+} catch { $env:COMPUTERNAME }
+
 switch ($Mode) {
   'monitor' {
     $ext = Get-Process -Name 'defender-mpengine.ext' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -35,7 +40,7 @@ switch ($Mode) {
 
     $row = [ordered]@{
       ts_utc         = $now.ToString('o')
-      host           = $env:COMPUTERNAME
+      host           = $hostId
       ext_pid        = $ext.Id
       ext_start_utc  = Iso $ext.StartTime
       ext_ws_mb      = if ($ext) { [math]::Round($ext.WorkingSet64 / 1MB, 2) } else { '' }
@@ -87,8 +92,8 @@ switch ($Mode) {
     Compress-Archive -Force -Path "$soak\*" -DestinationPath $zip
     $token = (Invoke-RestMethod -Headers @{ 'Metadata-Flavor' = 'Google' } `
         'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token').access_token
-    foreach ($name in "soak/results/$env:COMPUTERNAME/latest.zip",
-                      "soak/results/$env:COMPUTERNAME/$($now.ToString('yyyyMMdd-HH')).zip") {
+    foreach ($name in "soak/results/$hostId/latest.zip",
+                      "soak/results/$hostId/$($now.ToString('yyyyMMdd-HH')).zip") {
       $u = "https://storage.googleapis.com/upload/storage/v1/b/$bucket/o?uploadType=media&name=$([uri]::EscapeDataString($name))"
       Invoke-RestMethod -Method Post -Headers @{ Authorization = "Bearer $token" } -InFile $zip `
         -ContentType 'application/zip' $u | Out-Null
