@@ -196,7 +196,7 @@ also has `path` (TEXT).
 | `defender_mpengine_folder_guard_paths` | `FolderGuardPaths` | id, user_id, guid, folder_path (Path) |
 | `defender_mpengine_amsi_file_cache` | `AmsiFileCache` | id, expiration_date (text as stored), persist_id, persist_id_blob |
 | `defender_mpengine_schema_history` | `SQLiteGlobals` | id, version, current, last_updated (text as stored) |
-| `defender_mpengine_inventory_identifiers` | `MetaInventoryIdentifiers` + `MetaInventoryIdentifierVulnerabilities(Identifier, VulnerabilityId)` | identifier, kind, kind_name (1=cpe, 2=purl), vulnerabilities (comma-joined, sorted) |
+| `defender_mpengine_inventory_identifiers` | `MetaInventoryIdentifiers` + `MetaInventoryIdentifierVulnerabilities(Identifier, VulnerabilityId)` ∪ `InventoryEntries(identifier, vulnerabilities, first_seen_utc, last_seen_utc)` (seen on engines 1.1.26090.9 and 1.1.26100.4) | identifier, kind, kind_name (Kind 1=cpe, 2=purl; else from the `cpe:`/`pkg:` prefix), vulnerabilities (comma-joined, sorted, de-duplicated; InventoryEntries text may be a JSON array or a delimited list), first_seen, last_seen (unix seconds; InventoryEntries only), source |
 | `defender_mpengine_tables` | `sqlite_master` | table_name, row_count, sql |
 | `defender_mpengine_raw` | any table | table_name, row_id (ordinal), column_name, value (text; blob=hex), value_type. Honors `table_name =` constraint. |
 | `defender_mpengine_status` | `Info` + `pragma integrity_check` | db_path, wal_path, db_size, wal_size, db_sha256, wal_sha256, protection, key_source, keystream_sha256, derived_low_confidence, page_size, db_pages, wal_header_valid, wal_frames_total, wal_frames_committed, wal_commits, wal_note, quick_check (from Open), integrity_check, table_count, error |

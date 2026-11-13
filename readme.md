@@ -67,7 +67,7 @@ column; blobs are lowercase hex; GUIDs are decoded to `8-4-4-4-12`.
 | `defender_mpengine_folder_guard_paths` | FolderGuardPaths | Controlled Folder Access paths |
 | `defender_mpengine_amsi_file_cache` | AmsiFileCache | AMSI scan result cache |
 | `defender_mpengine_schema_history` | SQLiteGlobals | schema version history (creation and upgrades) |
-| `defender_mpengine_inventory_identifiers` | MetaInventoryIdentifiers(+Vulnerabilities) | software inventory (CPE / purl) with associated vulnerability IDs |
+| `defender_mpengine_inventory_identifiers` | MetaInventoryIdentifiers(+Vulnerabilities) or InventoryEntries | software inventory (CPE / purl) with associated vulnerability IDs and first/last seen; `source` says which layout |
 | `defender_mpengine_tables` | sqlite_master | every table in the DB with row count and DDL |
 | `defender_mpengine_raw` | any table | generic dump, one row per cell; honours `table_name =` |
 | `defender_mpengine_status` | decryptor + `pragma quick_check` / `integrity_check` | source files and hashes, protection, key source, WAL replay stats, quick_check (at decrypt time), integrity_check, table_count, error |
@@ -196,10 +196,12 @@ A ready-made Windows pack is in [pack/defender_mpengine.conf](pack/defender_mpen
   derivation (known header plaintext + zero-filled free space voting), which
   may leave low-confidence bytes and be rejected — check `key_source` and
   `derived_low_confidence` in `defender_mpengine_status`.
-- On those engines software inventory lives in `InventoryEntries`
-  (identifier, vulnerabilities, first/last seen), not `MetaInventoryIdentifiers`,
-  so `defender_mpengine_inventory_identifiers` is empty there; query
-  `defender_mpengine_raw WHERE table_name = 'InventoryEntries'` meanwhile.
+- Software inventory is in `MetaInventoryIdentifiers` in the original
+  write-up but in `InventoryEntries` on the engines tested here (1.1.26090.9,
+  1.1.26100.4);
+  `defender_mpengine_inventory_identifiers` reads both. `InventoryEntries`
+  was empty on the hosts tested so far, so its vulnerabilities format is
+  parsed defensively (JSON array or delimited list).
 - Defender's schema can change between builds. Tables select only the columns
   that exist; a missing column is empty and a missing table yields zero rows.
 - Defender keeps roughly two weeks of data (attack-scoring queues about one

@@ -2,6 +2,7 @@ package tables
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
@@ -245,7 +247,17 @@ func prepRollingQueues(ctx context.Context, rd reader) (func(Row), error) {
 	}, nil
 }
 
-// prepInventory attaches the sorted, comma-joined vulnerability IDs.
+// Software inventory lives in MetaInventoryIdentifiers (+ a separate
+// vulnerabilities table) on some engine builds and in InventoryEntries
+// (identifier, vulnerabilities, first/last seen) on others, e.g. engines
+// 1.1.26090.9 and 1.1.26100.4. Both feed defender_mpengine_inventory_identifiers.
+const (
+	invMeta    = "MetaInventoryIdentifiers"
+	invEntries = "InventoryEntries"
+)
+
+// prepInventory normalizes rows from either inventory source: it sets
+// Identifier, _vulns (sorted, de-duplicated, comma-joined) and _kind_name.
 func prepInventory(ctx context.Context, rd reader) (func(Row), error) {
 	vs, err := readTable(ctx, rd, "MetaInventoryIdentifierVulnerabilities")
 	if err != nil {
@@ -254,14 +266,57 @@ func prepInventory(ctx context.Context, rd reader) (func(Row), error) {
 	vulns := map[string][]string{}
 	for _, v := range vs {
 		id := text(v["Identifier"])
-		if vid := text(v["VulnerabilityId"]); vid != "" && !slices.Contains(vulns[id], vid) {
-			vulns[id] = append(vulns[id], vid)
+		vulns[id] = append(vulns[id], text(v["VulnerabilityId"]))
+	}
+	return func(r Row) {
+		if r["_source"] == invEntries {
+			r["Identifier"] = r["identifier"]
+			r["_vulns"] = joinIDs(splitVulns(text(r["vulnerabilities"])))
+		} else {
+			r["_vulns"] = joinIDs(vulns[text(r["Identifier"])])
+		}
+		r["_kind_name"] = inventoryKind(r)
+	}, nil
+}
+
+// inventoryKind names the identifier scheme from Kind (1=cpe, 2=purl) or,
+// when there is no Kind column, from the identifier's prefix.
+func inventoryKind(r Row) string {
+	if k, ok := toInt(r["Kind"]); ok {
+		return map[int64]string{1: "cpe", 2: "purl"}[k]
+	}
+	switch id := strings.ToLower(text(r["Identifier"])); {
+	case strings.HasPrefix(id, "cpe:"):
+		return "cpe"
+	case strings.HasPrefix(id, "pkg:"):
+		return "purl"
+	}
+	return ""
+}
+
+// splitVulns parses InventoryEntries.vulnerabilities, accepting a JSON array
+// of strings or a comma/semicolon/whitespace separated list.
+func splitVulns(s string) []string {
+	s = strings.TrimSpace(s)
+	var arr []string
+	if strings.HasPrefix(s, "[") && json.Unmarshal([]byte(s), &arr) == nil {
+		return arr
+	}
+	return strings.FieldsFunc(s, func(c rune) bool {
+		return c == ',' || c == ';' || unicode.IsSpace(c)
+	})
+}
+
+// joinIDs trims, de-duplicates and sorts ids, then comma-joins them.
+func joinIDs(ids []string) string {
+	var out []string
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" && !slices.Contains(out, id) {
+			out = append(out, id)
 		}
 	}
-	for _, l := range vulns {
-		sort.Strings(l)
-	}
-	return func(r Row) { r["_vulns"] = strings.Join(vulns[text(r["Identifier"])], ",") }, nil
+	sort.Strings(out)
+	return strings.Join(out, ",")
 }
 
 func asrID(r Row) string {
@@ -486,15 +541,20 @@ var specs = []Spec{
 		},
 	},
 	{
-		Name: "defender_mpengine_inventory_identifiers", From: from("MetaInventoryIdentifiers"), Prep: prepInventory,
+		Name: "defender_mpengine_inventory_identifiers",
+		From: []From{
+			{Table: invMeta, Set: Row{"_source": invMeta}},
+			{Table: invEntries, Set: Row{"_source": invEntries}},
+		},
+		Prep: prepInventory,
 		Cols: []Col{
 			{Name: "identifier", Src: "Identifier"},
 			{Name: "kind", Src: "Kind", Kind: Int},
-			{Name: "kind_name", Fn: func(r Row) any {
-				k, _ := toInt(r["Kind"])
-				return map[int64]string{1: "cpe", 2: "purl"}[k]
-			}},
+			{Name: "kind_name", Src: "_kind_name"},
 			{Name: "vulnerabilities", Src: "_vulns"},
+			{Name: "first_seen", Src: "first_seen_utc", Kind: Int},
+			{Name: "last_seen", Src: "last_seen_utc", Kind: Int},
+			{Name: "source", Src: "_source"},
 		},
 	},
 }
