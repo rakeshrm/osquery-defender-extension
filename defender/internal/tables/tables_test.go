@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 	"github.com/osquery/osquery-go/plugin/table"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 )
 
 const oracle = "../mpengine/testdata/oracle"

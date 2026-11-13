@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 	"github.com/osquery/osquery-go/plugin/table"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 )
 
 // tableNames lists the ordinary tables (no views or virtual tables).

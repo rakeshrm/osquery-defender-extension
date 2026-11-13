@@ -312,9 +312,12 @@ func TestReadStableRetries(t *testing.T) {
 		}
 	}
 
+	// Fixed, distinct mtimes: time.Now() is too coarse on Windows (two calls
+	// can return the same tick), which made "changed" look unchanged.
+	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	hook(func(n int64) {
 		if n == 1 {
-			mt := time.Now().Add(time.Hour)
+			mt := base.Add(time.Hour)
 			_ = os.Chtimes(dbFile, mt, mt)
 		}
 	})
@@ -324,7 +327,7 @@ func TestReadStableRetries(t *testing.T) {
 	}
 
 	hook(func(n int64) {
-		mt := time.Now().Add(time.Duration(n) * time.Hour)
+		mt := base.Add(time.Duration(100+n) * time.Hour)
 		_ = os.Chtimes(dbFile, mt, mt)
 	})
 	_, info, err = Decrypt(dir, Options{})

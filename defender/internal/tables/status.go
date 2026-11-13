@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 	"github.com/osquery/osquery-go/plugin/table"
+	"github.com/rakeshrm/osquery-defender-extension/internal/mpengine"
 )
 
 // statusCols lists defender_mpengine_status columns ("+" = BIGINT).
