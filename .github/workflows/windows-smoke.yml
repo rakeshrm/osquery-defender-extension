@@ -11,10 +11,12 @@ on:
     - cron: "17 6 * * 1"
   push:
     branches: [main]
-    paths:
+    paths: &smoke_paths
       - "defender/**"
       - "scripts/windows-smoke.ps1"
       - ".github/workflows/windows-smoke.yml"
+  pull_request:
+    paths: *smoke_paths
 
 permissions:
   contents: read
