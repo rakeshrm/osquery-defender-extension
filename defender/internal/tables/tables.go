@@ -248,9 +248,9 @@ func prepRollingQueues(ctx context.Context, rd reader) (func(Row), error) {
 }
 
 // Software inventory lives in MetaInventoryIdentifiers (+ a separate
-// vulnerabilities table) on some engine builds and in InventoryEntries
-// (identifier, vulnerabilities, first/last seen) on others, e.g. engines
-// 1.1.26090.9 and 1.1.26100.4. Both feed defender_mpengine_inventory_identifiers.
+// vulnerabilities table) on some hosts and in InventoryEntries (identifier,
+// vulnerabilities, first/last seen) on others - even on the same engine
+// (1.1.26100.4). Both feed defender_mpengine_inventory_identifiers.
 const (
 	invMeta    = "MetaInventoryIdentifiers"
 	invEntries = "InventoryEntries"

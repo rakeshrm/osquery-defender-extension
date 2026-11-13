@@ -196,9 +196,10 @@ A ready-made Windows pack is in [pack/defender_mpengine.conf](pack/defender_mpen
   derivation (known header plaintext + zero-filled free space voting), which
   may leave low-confidence bytes and be rejected — check `key_source` and
   `derived_low_confidence` in `defender_mpengine_status`.
-- Software inventory is in `MetaInventoryIdentifiers` in the original
-  write-up but in `InventoryEntries` on the engines tested here (1.1.26090.9,
-  1.1.26100.4);
+- Software inventory uses two layouts that vary per host, even on the same
+  engine (1.1.26100.4): `MetaInventoryIdentifiers` (+ vulnerabilities table;
+  e.g. GitHub's windows-latest, 526 rows) or `InventoryEntries` (e.g. a GCE
+  Windows Server 2022 VM);
   `defender_mpengine_inventory_identifiers` reads both. `InventoryEntries`
   was empty on the hosts tested so far, so its vulnerabilities format is
   parsed defensively (JSON array or delimited list).
