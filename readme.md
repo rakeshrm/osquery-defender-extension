@@ -133,6 +133,7 @@ defender-mpengine-windows-amd64.ext.exe --decrypt D:\case\Scans --out D:\case\mp
 --max_db_bytes 1073741824    refuse db+wal larger than this (also for --decrypt)
 --allow_unc_paths            allow UNC / device paths (\\server\share, \\.\, \\?\) in path =
 --derive_key                 ignore known keys; derive the keystream from the evidence
+--registration_check 30s     exit (so osqueryd restarts the extension) if osqueryd stops listing it; 0 disables
 --decrypt <file|dir> --out <plain.db> [--wal <file>] [--derive_key]   offline decrypt, then exit
 --version                    print version and exit
 ```
