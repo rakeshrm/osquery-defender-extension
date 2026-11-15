@@ -19,7 +19,7 @@ import json
 import os
 import statistics
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 def ts(s):
@@ -110,6 +110,7 @@ def analyze_host(host, base):
         issues.append(f"{def_errors} Defender error events (check for database/IO errors)")
 
     status_rows, status_errors, qc_bad, counts = 0, collections.Counter(), collections.Counter(), {}
+    status_times = []
     layouts = set()
     for p in find(base, "osqueryd.results.log*") + find(base, "osqueryd.snapshots.log*"):
         for line in read_lines(p):
@@ -120,6 +121,8 @@ def analyze_host(host, base):
             name = rec.get("name", "")
             snap = rec.get("snapshot") or []
             if name == "soak_status":
+                if rec.get("unixTime"):
+                    status_times.append(int(rec["unixTime"]))
                 for r in snap:
                     status_rows += 1
                     if r.get("error"):
@@ -135,6 +138,16 @@ def analyze_host(host, base):
         print(f"     {n:>4} x {e}")
     if status_rows == 0:
         issues.append("no soak_status results logged (osqueryd/extension not answering?)")
+    # soak_status runs every 60 s; a long gap means the extension was not answering.
+    status_times.sort()
+    gaps = [(a, b) for a, b in zip(status_times, status_times[1:]) if b - a > 15 * 60]
+    tail = int(t1.timestamp()) - status_times[-1] if status_times else 0
+    if tail > 15 * 60:
+        gaps.append((status_times[-1], int(t1.timestamp())))
+    for a, b in gaps[:5]:
+        print(f"  status gap  {datetime.fromtimestamp(a, timezone.utc):%Y-%m-%d %H:%M} -> {datetime.fromtimestamp(b, timezone.utc):%Y-%m-%d %H:%M} UTC ({(b - a) / 3600:.1f} h without a status result)")
+    if gaps:
+        issues.append(f"{len(gaps)} gap(s) >15 min without status results (longest {max(b - a for a, b in gaps) / 3600:.1f} h)")
     if status_errors or qc_bad:
         issues.append("status reported errors or quick_check failures")
     if counts:
@@ -142,9 +155,15 @@ def analyze_host(host, base):
     if layouts:
         print(f"  inventory   tables present: {sorted(layouts)}")
 
-    warn = []
+    warn = set()  # glog repeats ERROR lines in the WARNING file: dedupe
     for p in find(base, "osqueryd.WARNING*") + find(base, "osqueryd.ERROR*"):
-        warn += [line for line in read_lines(p) if "defender" in line.lower() or "extension" in line.lower()]
+        warn |= {line for line in read_lines(p) if "defender" in line.lower() or "extension" in line.lower()}
+    warn = sorted(warn)
+    gone = sorted({line for p in find(base, "osqueryd.INFO*") for line in read_lines(p) if "has gone away" in line})
+    for line in gone[:5]:
+        print(f"  dropped     {line[:120]}")
+    if gone:
+        issues.append(f"osqueryd dropped the extension {len(gone)} time(s) ('has gone away')")
     print(f"  osquery     {len(warn)} warning/error lines mentioning the extension")
     for line in collections.Counter(w[w.find("]") + 1:].strip()[:140] for w in warn).most_common(5):
         print(f"     {line[1]:>4} x {line[0]}")
