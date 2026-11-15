@@ -43,6 +43,7 @@ func main() {
 		decrypt   = fs.String("decrypt", "", "offline: decrypt this mpenginedb.db file or directory to --out and exit")
 		out       = fs.String("out", "", "offline: output path for --decrypt (must not exist)")
 		wal       = fs.String("wal", "", "offline: explicit WAL path for --decrypt")
+		regCheck  = fs.Duration("registration_check", 30*time.Second, "how often to confirm osqueryd still lists this extension; exit if it does not (so osqueryd restarts it); 0 disables")
 	)
 	if err := fs.Parse(knownArgs(fs, os.Args[1:])); err != nil {
 		os.Exit(2)
@@ -69,7 +70,7 @@ func main() {
 			os.Exit(2)
 		}
 		cache := mpengine.NewCache(*cacheTTL, *cacheMax, mpengine.Options{DeriveKey: *deriveKey, MaxBytes: *maxBytes})
-		err := serve(*socket, time.Duration(*timeout)*time.Second, time.Duration(*interval)*time.Second,
+		err := serve(*socket, time.Duration(*timeout)*time.Second, time.Duration(*interval)*time.Second, *regCheck, log,
 			tables.Config{Cache: cache, DefaultPath: *mpPath, Logger: log,
 				QueryTimeout: *queryTO, MaxRows: *maxRows, AllowUNCPaths: *allowUNC})
 		cache.Close()
@@ -80,8 +81,10 @@ func main() {
 	}
 }
 
-func serve(socket string, timeout, interval time.Duration, cfg tables.Config) error {
-	srv, err := osquery.NewExtensionManagerServer("defender_mpengine", socket,
+const extensionName = "defender_mpengine"
+
+func serve(socket string, timeout, interval, regCheck time.Duration, log *slog.Logger, cfg tables.Config) error {
+	srv, err := osquery.NewExtensionManagerServer(extensionName, socket,
 		osquery.ExtensionVersion(Version), osquery.ServerTimeout(timeout), osquery.ServerPingInterval(interval))
 	if err != nil {
 		return err
@@ -90,11 +93,34 @@ func serve(socket string, timeout, interval time.Duration, cfg tables.Config) er
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Exit if osqueryd silently drops the extension (see watchRegistration).
+	watchErr := make(chan error, 1)
+	if regCheck > 0 {
+		client, err := osquery.NewClient(socket, timeout)
+		if err != nil {
+			return fmt.Errorf("registration watchdog client: %w", err)
+		}
+		defer client.Close()
+		go func() {
+			if err := watchRegistration(ctx, client, extensionName, regCheck, timeout, log); err != nil {
+				watchErr <- err
+				stop()
+			}
+		}()
+	}
+
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
 	}()
-	return srv.Run()
+	runErr := srv.Run()
+	select {
+	case err := <-watchErr:
+		return err
+	default:
+		return runErr
+	}
 }
 
 // decryptTo writes the plaintext image to out (refusing to overwrite, mode

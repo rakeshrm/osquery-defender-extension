@@ -118,6 +118,17 @@ Key decisions:
   `\??\`) unless `--allow_unc_paths`, and a file must be named `mpenginedb*`
   (case-insensitive); rejected paths are skipped with a warning, and status
   reports `path rejected: ...`. `--mpengine_path` itself is trusted.
+* **Self-healing registration.** osqueryd drops an extension after a single
+  failed health check ("Extension UUID N has gone away"), but the extension's
+  own ping to osqueryd keeps succeeding, so it would linger alive but
+  unregistered, and osqueryd only relaunches extensions that exit. Every
+  `--registration_check` (default 30s) the extension lists osqueryd's
+  registered extensions; after two consecutive checks without
+  `defender_mpengine` it exits non-zero so osqueryd restarts it. Errors
+  reaching osqueryd are not counted (osquery-go's ping loop handles osqueryd
+  going away). Found in the weekend soak (Server 2025: one failed health
+  check, then 25 h of `vtable constructor failed`); recovery verified with
+  osqueryd 5.20 by force-deregistering the extension (back in ~60 s).
 
 ## Public API contract — `internal/mpengine`
 
@@ -214,7 +225,7 @@ Decoding details (match the reference parser / smap):
 defender-mpengine.ext --socket <p> [--timeout s] [--interval s] [--verbose]
                       [--mpengine_path <file|dir>] [--cache_ttl 30s] [--cache_entries 8]
                       [--query_timeout 30s] [--max_rows 500000] [--max_db_bytes 1073741824]
-                      [--allow_unc_paths] [--derive_key]
+                      [--allow_unc_paths] [--derive_key] [--registration_check 30s]
 defender-mpengine.ext --decrypt <file|dir> --out <plain.db> [--wal <file>] [--derive_key] [--max_db_bytes n]   # offline helper
 defender-mpengine.ext --version
 ```
