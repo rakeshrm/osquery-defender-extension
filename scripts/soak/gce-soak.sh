@@ -102,6 +102,8 @@ teardown)
   done
   gcloud storage rm -r "gs://$BUCKET" --quiet || true
   gcloud iam service-accounts delete "$SA_EMAIL" --project="$PROJECT" --quiet || true
+  # Temporary IAP RDP rule, if one was added for debugging/screenshots.
+  gcloud compute firewall-rules delete osqdef-soak-allow-iap-rdp --project="$PROJECT" --quiet 2>/dev/null || true
   rm -f "$STATE"
   echo "teardown complete"
   ;;
