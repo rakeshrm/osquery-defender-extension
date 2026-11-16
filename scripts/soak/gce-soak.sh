@@ -97,13 +97,33 @@ collect)
 
 teardown)
   source "$STATE"
+  # Keep the state file unless every delete succeeded (or the resource is
+  # already gone), so a failed teardown - e.g. expired gcloud auth - can be
+  # rerun as-is.
+  failed=0
+  del() {
+    local out
+    if ! out="$("$@" 2>&1)"; then
+      if grep -qiE 'not found|notFound|404|does not exist' <<<"$out"; then
+        echo "already gone: ${*:1:4}"
+      else
+        echo "$out" >&2; failed=1
+      fi
+    else
+      echo "$out"
+    fi
+  }
   for vm in $VMS; do
-    gcloud compute instances delete "$vm" --project="$PROJECT" --zone="$ZONE" --quiet || true
+    del gcloud compute instances delete "$vm" --project="$PROJECT" --zone="$ZONE" --quiet
   done
-  gcloud storage rm -r "gs://$BUCKET" --quiet || true
-  gcloud iam service-accounts delete "$SA_EMAIL" --project="$PROJECT" --quiet || true
+  del gcloud storage rm -r "gs://$BUCKET" --quiet
+  del gcloud iam service-accounts delete "$SA_EMAIL" --project="$PROJECT" --quiet
   # Temporary IAP RDP rule, if one was added for debugging/screenshots.
-  gcloud compute firewall-rules delete osqdef-soak-allow-iap-rdp --project="$PROJECT" --quiet 2>/dev/null || true
+  del gcloud compute firewall-rules delete osqdef-soak-allow-iap-rdp --project="$PROJECT" --quiet
+  if [ "$failed" -ne 0 ]; then
+    echo "teardown incomplete; kept $STATE - fix the error above (e.g. gcloud auth login) and rerun teardown" >&2
+    exit 1
+  fi
   rm -f "$STATE"
   echo "teardown complete"
   ;;
