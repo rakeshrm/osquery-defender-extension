@@ -68,6 +68,12 @@ column; blobs are lowercase hex; GUIDs are decoded to `8-4-4-4-12`.
 | `defender_mpengine_amsi_file_cache` | AmsiFileCache | AMSI scan result cache |
 | `defender_mpengine_schema_history` | SQLiteGlobals | schema version history (creation and upgrades) |
 | `defender_mpengine_inventory_identifiers` | MetaInventoryIdentifiers(+Vulnerabilities) or InventoryEntries | software inventory (CPE / purl) with associated vulnerability IDs and first/last seen; `source` says which layout |
+| `defender_mpengine_system_file_cache` | SystemFileCache | system files Defender restored during remediation, with infected and clean hashes |
+| `defender_mpengine_system_registry_cache` | SystemRegistryCache | registry values Defender changed during remediation, before and after (decoded by REG_* type, plus hex) |
+| `defender_mpengine_bm_file_info` | BmFileInfo | files tracked by behaviour monitoring (path, from-web, executable) |
+| `defender_mpengine_bm_file_actions` | BmFileActions + BmFileInfo | behaviour-monitoring actions and threat records per file |
+| `defender_mpengine_bm_file_startup_actions` | BmFileStartupActions | startup files with behaviour-monitoring actions and threat records |
+| `defender_mpengine_bm_hips_rules` | BmHipsRuleInfo + BmProcessInfo | HIPS/ASR rules applied to monitored processes (rule name, audit, inherited) |
 | `defender_mpengine_tables` | sqlite_master | every table in the DB with row count and DDL |
 | `defender_mpengine_raw` | any table | generic dump, one row per cell; honours `table_name =` |
 | `defender_mpengine_status` | decryptor + `pragma quick_check` / `integrity_check` | source files and hashes, protection, key source, WAL replay stats, quick_check (at decrypt time), integrity_check, table_count, error |

@@ -208,6 +208,12 @@ also has `path` (TEXT).
 | `defender_mpengine_amsi_file_cache` | `AmsiFileCache` | id, expiration_date (text as stored), persist_id, persist_id_blob |
 | `defender_mpengine_schema_history` | `SQLiteGlobals` | id, version, current, last_updated (text as stored) |
 | `defender_mpengine_inventory_identifiers` | `MetaInventoryIdentifiers` + `MetaInventoryIdentifierVulnerabilities(Identifier, VulnerabilityId)` ∪ `InventoryEntries(identifier, vulnerabilities, first_seen_utc, last_seen_utc)` (layout varies per host, even on the same engine) | identifier, kind, kind_name (Kind 1=cpe, 2=purl; else from the `cpe:`/`pkg:` prefix), vulnerabilities (comma-joined, sorted, de-duplicated; InventoryEntries text may be a JSON array or a delimited list), first_seen, last_seen (unix seconds; InventoryEntries only), source |
+| `defender_mpengine_system_file_cache` | `SystemFileCache` | id, instance_time (+_raw), system_file_path, infected_file_sha, clean_file_sha (text; binary blobs as hex), proc_file_id (hex), infected_file_sha_hash, clean_file_sha_hash, proc_file_id_system_file_hash |
+| `defender_mpengine_system_registry_cache` | `SystemRegistryCache` | id, instance_time (+_raw), reg_path, reg_operation, old_type, old_type_name, old_data, old_data_hex, new_type, new_type_name, new_data, new_data_hex, key, file_id_hash |
+| `defender_mpengine_bm_file_info` | `BmFileInfo` | id, dos_path, normalized_path, is_from_web, is_executable, struct_version, dos_path_hash, normalized_path_hash, wow64_context (hex), meta_context (hex) |
+| `defender_mpengine_bm_file_actions` | `BmFileActions` + `BmFileInfo.DosPath` (on FileInfoId = ID) | id, file_info_id, dos_path, threat_record_id, action |
+| `defender_mpengine_bm_file_startup_actions` | `BmFileStartupActions` | id, file_path, action_flags, process_start_count, fdr_flags, fdr_threat_record_id, evaluator_threat_record_id, trusted_installer_threat_record_id, lfr_threat_record_id, file_path_hash |
+| `defender_mpengine_bm_hips_rules` | `BmHipsRuleInfo` + `BmProcessInfo(PID, ImageFileName)` (on ProcessInfoId = ID) | id, process_info_id, pid, image_file_name, rule_id (GUID), asr_rule_name, rule_action, is_audit, is_inherited, state |
 | `defender_mpengine_tables` | `sqlite_master` | table_name, row_count, sql |
 | `defender_mpengine_raw` | any table | table_name, row_id (ordinal), column_name, value (text; blob=hex), value_type. Honors `table_name =` constraint. |
 | `defender_mpengine_status` | `Info` + `pragma integrity_check` | db_path, wal_path, db_size, wal_size, db_sha256, wal_sha256, protection, key_source, keystream_sha256, derived_low_confidence, page_size, db_pages, wal_header_valid, wal_frames_total, wal_frames_committed, wal_commits, wal_note, quick_check (from Open), integrity_check, table_count, error |
@@ -218,6 +224,8 @@ Decoding details (match the reference parser / smap):
 * Persist context: FilePath `AsrRuleStateChangeFor:<guid>` → record_kind `asr_rule_state`, asr_rule_id `<guid>` lowercased; else `path_tag`. ASR GUID→name from the Microsoft list (embedded map, see smap).
 * FileHashes: volume_serial `%04X-%04X` of (VSN>>16)&0xFFFF, VSN&0xFFFF; mft_entry = FileID & 0xFFFFFFFFFFFF, mft_sequence = (FileID>>48)&0xFFFF (FileID as uint64); CRC columns `%08X` of value & 0xFFFFFFFF; ssdeep = CTPH up to first NUL.
 * BackupProcessInfo: first_start_is_time = 1 if FirstStartTime is a plausible FILETIME.
+* SystemRegistryCache: `*_type_name` from the REG_* value type. `*_data` decodes by type: REG_SZ / REG_EXPAND_SZ / REG_LINK as UTF-16LE up to the first NUL, REG_MULTI_SZ as UTF-16LE strings joined with `,`, REG_DWORD (LE), REG_DWORD_BIG_ENDIAN and REG_QWORD (LE) as unsigned decimal; other types or short data give "" and `*_data_hex` always has the bytes. RegOperation and the Bm* action/flag columns are undocumented and kept as integers.
+* SystemFileCache / SystemRegistryCache / Bm*: schemas from live databases (Server 2022/2025, engine 1.1.26100.x), where these tables were empty; no reference decoder exists for them. Joined columns are empty when the parent row is missing.
 
 ## CLI
 
