@@ -11,8 +11,10 @@ C:\ProgramData\Microsoft\Windows Defender\Scans\mpenginedb.db-wal
 The database is a flight recorder of what the Defender engine saw: per-process
 MITRE ATT&CK attack scoring, behaviour detections, dropped executables, path
 tags (side-loading, unsigned PEs), ASR rule state and blocks, ransomware
-detections and rollback tracking, the real-time protection hash cache and the
-software inventory with CVEs. Every page is RC4-encrypted, so standard SQLite
+detections and rollback tracking, the system files and registry values Defender
+restored during remediation (before and after), behaviour-monitoring file and
+rule records, the real-time protection hash cache and the software inventory
+with CVEs. Every page is RC4-encrypted, so standard SQLite
 tooling cannot read it; this extension decrypts it in memory and serves it as
 SQL.
 
@@ -105,6 +107,25 @@ FROM defender_mpengine_process_block_history;
 -- Software with CVEs
 SELECT identifier, kind_name, vulnerabilities
 FROM defender_mpengine_inventory_identifiers WHERE vulnerabilities != '';
+
+-- Registry values Defender put back during remediation (what malware changed)
+SELECT datetime(instance_time, 'unixepoch') AS t, reg_path,
+       old_type_name, old_data, new_type_name, new_data
+FROM defender_mpengine_system_registry_cache;
+
+-- System files Defender restored, with the infected and clean hashes
+SELECT datetime(instance_time, 'unixepoch') AS t, system_file_path, infected_file_sha, clean_file_sha
+FROM defender_mpengine_system_file_cache;
+
+-- Rules behaviour monitoring applied to processes, with the ASR rule name
+SELECT pid, image_file_name, asr_rule_name, rule_id, rule_action, is_audit
+FROM defender_mpengine_bm_hips_rules;
+
+-- Executables from the web that behaviour monitoring tracked, and its actions on them
+SELECT i.dos_path, a.action, a.threat_record_id
+FROM defender_mpengine_bm_file_info i
+LEFT JOIN defender_mpengine_bm_file_actions a ON a.file_info_id = i.id
+WHERE i.is_from_web = 1 AND i.is_executable = 1;
 ```
 
 ### Offline evidence
@@ -225,6 +246,11 @@ A ready-made Windows pack is in [pack/defender_mpengine.conf](pack/defender_mpen
   `defender_mpengine_inventory_identifiers` reads both. `InventoryEntries`
   was empty on the hosts tested so far, so its vulnerabilities format is
   parsed defensively (JSON array or delimited list).
+- `SystemFileCache`, `SystemRegistryCache` and the `Bm*` file/rule tables were
+  empty on the hosts tested so far and no reference decoder covers them. Their
+  columns follow the live schema; registry data is decoded by its `REG_*` type
+  (hex is always kept), and undocumented codes (`reg_operation`, Bm actions and
+  flags) are left as integers.
 - Defender's schema can change between builds. Tables select only the columns
   that exist; a missing column is empty and a missing table yields zero rows.
 - Defender keeps roughly two weeks of data (attack-scoring queues about one
