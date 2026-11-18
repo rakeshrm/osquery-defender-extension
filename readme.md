@@ -177,6 +177,13 @@ then verify it:
 Select-String defender-mpengine-windows-amd64.ext.exe .\SHA256SUMS
 ```
 
+Releases after v0.2.0 also carry a signed build provenance attestation, which
+proves the file was built from this repository by its release workflow:
+
+```
+gh attestation verify defender-mpengine-windows-amd64.ext.exe -R rakeshrm/osquery-defender-extension
+```
+
 Each release also ships `defender_mpengine.conf`, the osquery pack. To build
 from source instead, see [Development](#development).
 
